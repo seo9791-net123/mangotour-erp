@@ -1,0 +1,6 @@
+{
+  "name": "MANGO TOUR ERP - 망고투어 통합 관리 시스템",
+  "description": "베트남 호치민 전문 여행사 망고투어의 PDF 견적서 AI 자동 인식, 월간 골프/투어 스케줄, 예약 및 자금·정산 통합 ERP 시스템",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

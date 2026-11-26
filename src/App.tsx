@@ -1,0 +1,578 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  CalendarDays,
+  Database,
+  FileSpreadsheet,
+  FileUp,
+  Loader2,
+  LogOut,
+  Menu,
+  Sheet,
+  Users,
+  Wallet,
+  X,
+} from 'lucide-react';
+import { BackupModal } from './components/BackupModal';
+import { BookingDetailModal } from './components/BookingDetailModal';
+import { BookingsView } from './components/BookingsView';
+import { ExcelSheetView } from './components/ExcelSheetView';
+import { FinanceView } from './components/FinanceView';
+import { LoginView } from './components/LoginView';
+import { ScheduleView } from './components/ScheduleView';
+import { StaffManageView } from './components/StaffManageView';
+import { isSupabaseConfigured } from './lib/supabase';
+import {
+  createBooking,
+  deleteBooking,
+  fetchBookings,
+  subscribeToBookingsRealtime,
+  updateBooking,
+  upsertBookingsBatch,
+} from './services/bookingsService';
+import type { AuthUser, ExcelSheetRow, Reservation, ScheduleItem, StaffAccount } from './types/erp';
+import {
+  exportReservationsToCsv,
+  loadAuthUser,
+  loadExcelSheetRows,
+  loadStaffAccounts,
+  saveAuthUser,
+  saveExcelSheetRows,
+  saveStaffAccounts,
+} from './utils/storage';
+import { useBodyScrollLock } from './utils/useBodyScrollLock';
+
+type MenuTab = 'schedule' | 'bookings' | 'finance' | 'excel' | 'staff';
+
+export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(() => loadAuthUser());
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [loadingBookings, setLoadingBookings] = useState<boolean>(true);
+  const [supabaseError, setSupabaseError] = useState<string>('');
+  const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>(() => loadStaffAccounts());
+  const [excelRows, setExcelRows] = useState<ExcelSheetRow[]>(() => loadExcelSheetRows());
+  const [activeTab, setActiveTab] = useState<MenuTab>('schedule');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [detailReservationId, setDetailReservationId] = useState<string | null>(null);
+  const [backupModalOpen, setBackupModalOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string>('');
+
+  const reservationsRef = useRef<Reservation[]>(reservations);
+  reservationsRef.current = reservations;
+
+  const pendingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useBodyScrollLock(mobileMenuOpen);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? '' : prev));
+    }, 3000);
+  }, []);
+
+  // Load initial bookings from Supabase & subscribe to realtime updates
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setLoadingBookings(false);
+      setSupabaseError(
+        'Supabase 환경변수(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)가 설정되지 않았습니다.'
+      );
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadInitial = async () => {
+      setLoadingBookings(true);
+      setSupabaseError('');
+      try {
+        const list = await fetchBookings();
+        if (!cancelled) {
+          setReservations(list);
+        }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : 'Supabase 데이터를 불러오지 못했습니다.';
+          setSupabaseError(msg);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingBookings(false);
+        }
+      }
+    };
+
+    loadInitial();
+
+    const unsubscribe = subscribeToBookingsRealtime({
+      onInsertOrUpdate: (incoming) => {
+        // Skip echo overwrite while user is actively typing/debouncing on that reservation
+        if (pendingTimersRef.current.has(incoming.id)) {
+          return;
+        }
+        setReservations((prev) => {
+          const exists = prev.some((r) => r.id === incoming.id);
+          if (exists) {
+            return prev.map((r) => (r.id === incoming.id ? incoming : r));
+          }
+          return [incoming, ...prev];
+        });
+      },
+      onDelete: (deletedId) => {
+        setReservations((prev) => prev.filter((r) => r.id !== deletedId));
+        setDetailReservationId((prevId) => (prevId === deletedId ? null : prevId));
+      },
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      pendingTimersRef.current.forEach((timer) => clearTimeout(timer));
+      pendingTimersRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    saveStaffAccounts(staffAccounts);
+  }, [staffAccounts]);
+
+  useEffect(() => {
+    saveExcelSheetRows(excelRows);
+  }, [excelRows]);
+
+  useEffect(() => {
+    if (
+      user?.role === 'staff' &&
+      (activeTab === 'finance' || activeTab === 'excel' || activeTab === 'staff')
+    ) {
+      setActiveTab('schedule');
+    }
+  }, [user, activeTab]);
+
+  const scheduleSupabaseUpdate = useCallback(
+    (reservationId: string, updatedReservation: Reservation) => {
+      if (!isSupabaseConfigured) return;
+
+      const existingTimer = pendingTimersRef.current.get(reservationId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      const timer = setTimeout(async () => {
+        pendingTimersRef.current.delete(reservationId);
+        try {
+          await updateBooking(updatedReservation);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Supabase 저장 중 오류가 발생했습니다.';
+          showToast(msg);
+        }
+      }, 300);
+
+      pendingTimersRef.current.set(reservationId, timer);
+    },
+    [showToast]
+  );
+
+  const handleLogin = (authUser: AuthUser) => {
+    setUser(authUser);
+    saveAuthUser(authUser);
+    setActiveTab('schedule');
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    saveAuthUser(null);
+    setDetailReservationId(null);
+  };
+
+  const handleAddReservation = async (newRes: Reservation) => {
+    setReservations((prev) => [newRes, ...prev]);
+
+    if (!isSupabaseConfigured) {
+      showToast('Supabase가 연결되지 않아 임시로 화면에만 표시됩니다.');
+      return;
+    }
+
+    try {
+      const saved = await createBooking(newRes);
+      setReservations((prev) => prev.map((r) => (r.id === newRes.id ? saved : r)));
+      showToast(`${saved.customerName} 고객님 예약이 Supabase에 저장되었습니다.`);
+    } catch (err: unknown) {
+      setReservations((prev) => prev.filter((r) => r.id !== newRes.id));
+      const msg = err instanceof Error ? err.message : '예약 저장 실패';
+      showToast(msg);
+    }
+  };
+
+  const handleUpdateReservation = (id: string, updates: Partial<Reservation>) => {
+    const current = reservationsRef.current.find((r) => r.id === id);
+    if (!current) return;
+
+    const nextReservation: Reservation = { ...current, ...updates };
+    setReservations((prev) => prev.map((r) => (r.id === id ? nextReservation : r)));
+    scheduleSupabaseUpdate(id, nextReservation);
+  };
+
+  const handleUpdateScheduleItem = (
+    reservationId: string,
+    scheduleId: string,
+    updates: Partial<ScheduleItem>
+  ) => {
+    const current = reservationsRef.current.find((r) => r.id === reservationId);
+    if (!current) return;
+
+    const nextReservation: Reservation = {
+      ...current,
+      scheduleItems: current.scheduleItems.map((s) =>
+        s.id === scheduleId ? { ...s, ...updates } : s
+      ),
+    };
+    setReservations((prev) => prev.map((r) => (r.id === reservationId ? nextReservation : r)));
+    scheduleSupabaseUpdate(reservationId, nextReservation);
+  };
+
+  const handleDeleteReservation = async (id: string) => {
+    if (user?.role !== 'admin') return;
+
+    const pendingTimer = pendingTimersRef.current.get(id);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      pendingTimersRef.current.delete(id);
+    }
+
+    const backupTarget = reservationsRef.current.find((r) => r.id === id);
+    setReservations((prev) => prev.filter((r) => r.id !== id));
+    setDetailReservationId(null);
+
+    if (!isSupabaseConfigured) {
+      showToast('예약이 삭제되었습니다.');
+      return;
+    }
+
+    try {
+      await deleteBooking(id);
+      showToast('Supabase에서 예약 내역이 삭제되었습니다.');
+    } catch (err: unknown) {
+      if (backupTarget) {
+        setReservations((prev) => [backupTarget, ...prev]);
+      }
+      const msg = err instanceof Error ? err.message : '예약 삭제 실패';
+      showToast(msg);
+    }
+  };
+
+  const handleRestoreReservations = async (nextList: Reservation[]) => {
+    if (!isSupabaseConfigured) {
+      setReservations(nextList);
+      showToast(`총 ${nextList.length}건의 예약 데이터가 화면에 복원되었습니다.`);
+      return;
+    }
+
+    try {
+      const savedList = await upsertBookingsBatch(nextList);
+      setReservations(savedList);
+      showToast(`총 ${savedList.length}건이 Supabase에 반영되었습니다.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '데이터 복원 실패';
+      showToast(msg);
+    }
+  };
+
+  const handleAddStaff = (staff: StaffAccount) => {
+    if (user?.role !== 'admin') return;
+    setStaffAccounts((prev) => [...prev, staff]);
+    showToast(`${staff.displayName} (${staff.username}) 직원이 등록되었습니다.`);
+  };
+
+  const handleDeleteStaff = (id: string) => {
+    if (user?.role !== 'admin') return;
+    setStaffAccounts((prev) => prev.filter((s) => s.id !== id));
+    showToast('직원 계정이 삭제되었습니다.');
+  };
+
+  if (!user) {
+    return <LoginView staffAccounts={staffAccounts} onLogin={handleLogin} />;
+  }
+
+  const isAdmin = user.role === 'admin';
+  const menuItems: Array<{
+    id: MenuTab;
+    label: string;
+    icon: React.FC<{ className?: string }>;
+  }> = [
+    { id: 'schedule', label: '월간 통합 스케줄', icon: CalendarDays },
+    { id: 'bookings', label: '견적 업로드 & 예약 목록', icon: FileUp },
+    ...(isAdmin
+      ? [
+          { id: 'finance' as const, label: '자금 및 정산 관리', icon: Wallet },
+          { id: 'excel' as const, label: '엑셀 시트', icon: Sheet },
+          { id: 'staff' as const, label: '직원 관리', icon: Users },
+        ]
+      : []),
+  ];
+
+  const activeReservation = detailReservationId
+    ? reservations.find((r) => r.id === detailReservationId) || null
+    : null;
+
+  const pageTitleMap: Record<MenuTab, string> = {
+    schedule: '월간 통합 스케줄',
+    bookings: '견적 업로드 & 예약 목록',
+    finance: '자금 및 정산 관리',
+    excel: '엑셀 시트 (관리자 전용)',
+    staff: '직원 관리 (등록 · 삭제)',
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex">
+      {/* Left Sidebar (Desktop) */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 bg-white border-r border-slate-200">
+        <div className="px-6 py-6 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-[#065F46] flex items-center justify-center shrink-0">
+              <span className="text-base font-bold text-[#F59E0B]">M</span>
+            </div>
+            <div>
+              <span className="block text-base font-bold tracking-tight text-slate-900">
+                MANGO TOUR
+              </span>
+              <span className="block text-[11px] text-slate-400">
+                호치민 통합 ERP
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <nav className="flex-1 p-4 space-y-1.5">
+          {menuItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[#065F46] text-white'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-[#F59E0B]' : 'text-slate-400'}`} />
+                <span className="truncate">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* User Account Footer */}
+        <div className="p-4 border-t border-slate-100">
+          <div className="px-3.5 py-3 rounded-xl bg-slate-50 border border-slate-200/80 mb-2.5">
+            <div className="text-xs font-bold text-slate-900">
+              {user.displayName}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
+              @{user.username} · {isAdmin ? '전체 권한' : '일정 관리 전용'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>로그아웃</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Sidebar Drawer */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 flex lg:hidden bg-slate-900/35">
+          <aside className="w-64 bg-white h-full border-r border-slate-200 flex flex-col">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <span className="text-base font-bold text-slate-900">MANGO TOUR</span>
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <nav className="flex-1 p-4 space-y-1.5">
+              {menuItems.map((item) => {
+                const Icon = item.icon;
+                const active = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(item.id);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
+                      active ? 'bg-[#065F46] text-white' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+            <div className="p-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>로그아웃 ({user.username})</span>
+              </button>
+            </div>
+          </aside>
+          <div className="flex-1" onClick={() => setMobileMenuOpen(false)} />
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Top Utility Header */}
+        <header className="bg-white border-b border-slate-200 px-3 sm:px-6 lg:px-10 py-3 sm:py-4 flex items-center justify-between gap-2 sm:gap-6">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="메뉴 열기"
+              className="lg:hidden p-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 shrink-0"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+            <h1 className="text-base sm:text-lg font-bold text-slate-900 truncate">
+              {pageTitleMap[activeTab]}
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                exportReservationsToCsv(reservations, user.role);
+                showToast('CSV 파일이 다운로드되었습니다.');
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-[#065F46]" />
+              <span className="hidden sm:inline">엑셀(CSV) 내보내기</span>
+              <span className="sm:hidden">CSV</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setBackupModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Database className="w-3.5 h-3.5 text-[#D97706]" />
+              <span className="hidden sm:inline">데이터 백업/복원</span>
+              <span className="sm:hidden">백업</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Viewport Content: Edge-to-edge on mobile, generous whitespace on desktop */}
+        <main className="flex-1 px-0 py-3 sm:p-6 lg:p-10 max-w-[1380px] w-full mx-auto">
+          {supabaseError && (
+            <div className="mb-4 mx-3 sm:mx-0 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-center gap-2.5">
+              <AlertCircle className="w-4 h-4 text-[#D97706] shrink-0" />
+              <span>{supabaseError}</span>
+            </div>
+          )}
+
+          {loadingBookings ? (
+            <div className="bg-white border-y sm:border border-slate-200 rounded-none sm:rounded-2xl p-12 flex flex-col items-center justify-center gap-3 text-slate-500">
+              <Loader2 className="w-6 h-6 text-[#065F46] animate-spin" />
+              <span className="text-xs font-medium">Supabase 예약 데이터를 불러오는 중...</span>
+            </div>
+          ) : (
+            <>
+              {activeTab === 'schedule' && (
+                <ScheduleView
+                  reservations={reservations}
+                  role={user.role}
+                  onUpdateScheduleItem={handleUpdateScheduleItem}
+                  onOpenReservationDetail={(id) => setDetailReservationId(id)}
+                />
+              )}
+
+              {activeTab === 'bookings' && (
+                <BookingsView
+                  reservations={reservations}
+                  role={user.role}
+                  onAddReservation={handleAddReservation}
+                  onOpenReservationDetail={(id) => setDetailReservationId(id)}
+                />
+              )}
+
+              {activeTab === 'finance' && isAdmin && (
+                <FinanceView
+                  reservations={reservations}
+                  onUpdateReservation={handleUpdateReservation}
+                />
+              )}
+
+              {activeTab === 'excel' && isAdmin && (
+                <ExcelSheetView
+                  reservations={reservations}
+                  excelRows={excelRows}
+                  onUpdateReservation={handleUpdateReservation}
+                  onAddReservationRow={handleAddReservation}
+                  onDeleteReservation={handleDeleteReservation}
+                  onUpdateExcelRows={setExcelRows}
+                />
+              )}
+
+              {activeTab === 'staff' && isAdmin && (
+                <StaffManageView
+                  staffAccounts={staffAccounts}
+                  onAddStaff={handleAddStaff}
+                  onDeleteStaff={handleDeleteStaff}
+                />
+              )}
+            </>
+          )}
+        </main>
+      </div>
+
+      {/* Reservation Detail Modal */}
+      {activeReservation && (
+        <BookingDetailModal
+          reservation={activeReservation}
+          role={user.role}
+          onClose={() => setDetailReservationId(null)}
+          onUpdateReservation={handleUpdateReservation}
+          onUpdateScheduleItem={handleUpdateScheduleItem}
+          onDeleteReservation={handleDeleteReservation}
+        />
+      )}
+
+      {/* Backup & Restore Modal */}
+      {backupModalOpen && (
+        <BackupModal
+          reservations={reservations}
+          onRestoreReservations={handleRestoreReservations}
+          onClose={() => setBackupModalOpen(false)}
+        />
+      )}
+
+      {/* Subtle Bottom-Right Feedback Toast */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl bg-slate-900 text-white text-xs font-medium shadow-lg">
+          {toastMessage}
+        </div>
+      )}
+    </div>
+  );
+}

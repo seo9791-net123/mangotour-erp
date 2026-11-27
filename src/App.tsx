@@ -21,7 +21,7 @@ import { FinanceView } from './components/FinanceView';
 import { LoginView } from './components/LoginView';
 import { ScheduleView } from './components/ScheduleView';
 import { StaffManageView } from './components/StaffManageView';
-import { isSupabaseConfigured } from './lib/supabase';
+import { isSupabaseConfigured, supabaseConfigError } from './lib/supabase';
 import {
   createBooking,
   deleteBooking,
@@ -81,7 +81,8 @@ export default function App() {
       setReservations([]);
       setLoadingBookings(false);
       setSupabaseError(
-        'Supabase 환경변수(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)가 설정되지 않았습니다.'
+        supabaseConfigError ||
+          'Supabase 환경변수(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)가 설정되지 않았습니다.'
       );
       return;
     }

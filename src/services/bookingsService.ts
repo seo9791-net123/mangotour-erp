@@ -249,6 +249,15 @@ function assertSupabase() {
   return supabase;
 }
 
+function formatSupabaseError(action: string, error: { code?: string; message: string }): Error {
+  if (error.code === '42501' || error.message.toLowerCase().includes('permission denied')) {
+    return new Error(
+      `Supabase ${action} 실패 (권한 거부 42501): Supabase SQL Editor에서 bookings 테이블의 anon 권한(GRANT) 및 RLS 정책을 허용해 주세요.`
+    );
+  }
+  return new Error(`Supabase ${action} 실패: ${error.message}`);
+}
+
 export async function fetchBookings(): Promise<Reservation[]> {
   const client = assertSupabase();
   const { data, error } = await client
@@ -257,7 +266,7 @@ export async function fetchBookings(): Promise<Reservation[]> {
     .order('start_date', { ascending: true });
 
   if (error) {
-    throw new Error(`Supabase 예약 조회 실패: ${error.message}`);
+    throw formatSupabaseError('예약 조회', error);
   }
   const rows = Array.isArray(data) ? data : [];
   return (rows as SupabaseBookingRow[]).map(mapBookingRowToReservation);
@@ -273,7 +282,7 @@ export async function createBooking(reservation: Reservation): Promise<Reservati
     .single();
 
   if (error) {
-    throw new Error(`Supabase 예약 저장 실패: ${error.message}`);
+    throw formatSupabaseError('예약 저장', error);
   }
   return mapBookingRowToReservation((data || row) as SupabaseBookingRow);
 }
@@ -291,7 +300,7 @@ export async function updateBooking(reservation: Reservation): Promise<Reservati
     .single();
 
   if (error) {
-    throw new Error(`Supabase 예약 수정 실패: ${error.message}`);
+    throw formatSupabaseError('예약 수정', error);
   }
   return mapBookingRowToReservation((data || row) as SupabaseBookingRow);
 }
@@ -301,7 +310,7 @@ export async function deleteBooking(id: string): Promise<void> {
   const { error } = await client.from('bookings').delete().eq('id', id);
 
   if (error) {
-    throw new Error(`Supabase 예약 삭제 실패: ${error.message}`);
+    throw formatSupabaseError('예약 삭제', error);
   }
 }
 
@@ -315,7 +324,7 @@ export async function upsertBookingsBatch(reservations: Reservation[]): Promise<
     .select('*');
 
   if (error) {
-    throw new Error(`Supabase 일괄 저장 실패: ${error.message}`);
+    throw formatSupabaseError('일괄 저장', error);
   }
   const resultRows = Array.isArray(data) ? data : [];
   return (resultRows as SupabaseBookingRow[]).map(mapBookingRowToReservation);

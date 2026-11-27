@@ -40,9 +40,11 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   reservations,
   onUpdateReservation,
 }) => {
+  const safeReservations = Array.isArray(reservations) ? reservations : [];
+
   const activeReservations = useMemo(
-    () => reservations.filter((r) => r.status !== '취소'),
-    [reservations]
+    () => safeReservations.filter((r) => r && r.status !== '취소'),
+    [safeReservations]
   );
 
   const [selectedId, setSelectedId] = useState<string>(
@@ -61,8 +63,8 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
 
     activeReservations.forEach((r) => {
       const fin = calculateReservationFinance(r);
-      totalRevenueUsd += r.totalPriceUsd || 0;
-      totalRevenueKrw += r.totalPriceKrw || 0;
+      totalRevenueUsd += Number(r.totalPriceUsd) || 0;
+      totalRevenueKrw += Number(r.totalPriceKrw) || 0;
       totalCostUsd += fin.totalCostUsd;
       totalCostKrw += fin.totalCostKrw;
       if (fin.isUnpaid) unpaidCount += 1;
@@ -89,13 +91,15 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     costId: string,
     updates: Partial<CostItem>
   ) => {
-    const nextCosts = res.costItems.map((item) =>
+    const currentCosts = Array.isArray(res.costItems) ? res.costItems : [];
+    const nextCosts = currentCosts.map((item) =>
       item.id === costId ? { ...item, ...updates } : item
     );
     onUpdateReservation(res.id, { costItems: nextCosts });
   };
 
   const handleAddCostItem = (res: Reservation) => {
+    const currentCosts = Array.isArray(res.costItems) ? res.costItems : [];
     const newItem: CostItem = {
       id: `cost-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       title: '추가 현지 지출 항목',
@@ -106,18 +110,22 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       paid: false,
       note: '',
     };
-    onUpdateReservation(res.id, { costItems: [...res.costItems, newItem] });
+    onUpdateReservation(res.id, { costItems: [...currentCosts, newItem] });
   };
 
   const handleDeleteCostItem = (res: Reservation, costId: string) => {
+    const currentCosts = Array.isArray(res.costItems) ? res.costItems : [];
     onUpdateReservation(res.id, {
-      costItems: res.costItems.filter((c) => c.id !== costId),
+      costItems: currentCosts.filter((c) => c.id !== costId),
     });
   };
 
   const selectedFinance = selectedReservation
     ? calculateReservationFinance(selectedReservation)
     : null;
+  const selectedCostItems = Array.isArray(selectedReservation?.costItems)
+    ? selectedReservation.costItems
+    : [];
 
   return (
     <div className="space-y-4 sm:space-y-8">
@@ -237,7 +245,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     {selectedReservation.startDate} ~ {selectedReservation.endDate}
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span>환율 {selectedReservation.exchangeRate.toLocaleString()}원/$</span>
+                  <span>환율 {(selectedReservation.exchangeRate || 1400).toLocaleString()}원/$</span>
                 </div>
                 <h3 className="mt-1 text-lg font-bold text-slate-900">
                   {selectedReservation.customerName} 고객님 — {selectedReservation.productName}
@@ -249,7 +257,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={selectedReservation.depositPaid}
+                    checked={Boolean(selectedReservation.depositPaid)}
                     onChange={(e) =>
                       onUpdateReservation(selectedReservation.id, {
                         depositPaid: e.target.checked,
@@ -263,7 +271,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={selectedReservation.balancePaid}
+                    checked={Boolean(selectedReservation.balancePaid)}
                     onChange={(e) =>
                       onUpdateReservation(selectedReservation.id, {
                         balancePaid: e.target.checked,
@@ -286,12 +294,13 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                   <span className="text-sm font-mono text-slate-400">$</span>
                   <input
                     type="number"
-                    value={selectedReservation.totalPriceUsd}
+                    value={selectedReservation.totalPriceUsd || 0}
                     onChange={(e) => {
                       const usd = Number(e.target.value) || 0;
+                      const rate = selectedReservation.exchangeRate || 1400;
                       onUpdateReservation(selectedReservation.id, {
                         totalPriceUsd: usd,
-                        totalPriceKrw: Math.round(usd * selectedReservation.exchangeRate),
+                        totalPriceKrw: Math.round(usd * rate),
                       });
                     }}
                     className="w-28 px-2.5 py-1 text-base font-bold font-mono bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-[#065F46]"
@@ -374,12 +383,12 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
 
                 {/* 2-Row Cost Item List */}
                 <div className="divide-y divide-slate-100">
-                  {selectedReservation.costItems.length === 0 ? (
+                  {selectedCostItems.length === 0 ? (
                     <div className="py-10 px-4 text-center text-xs text-slate-400">
                       등록된 원가 항목이 없습니다. 상단 버튼으로 추가해 주세요.
                     </div>
                   ) : (
-                    selectedReservation.costItems.map((cost) => (
+                    selectedCostItems.map((cost) => (
                       <div
                         key={cost.id}
                         className={`px-3 sm:px-4 py-3 space-y-2 transition-colors ${
@@ -425,7 +434,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
 
                           <div className="flex-1 min-w-0">
                             <AutoSizeTitle
-                              value={cost.title}
+                              value={cost.title || ''}
                               onChange={(nextTitle) =>
                                 handleCostChange(selectedReservation, cost.id, {
                                   title: nextTitle,
@@ -433,7 +442,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                               }
                             />
                             <div className="px-2 text-[11px] text-slate-400">
-                              <span className="whitespace-nowrap">{cost.source}</span>
+                              <span className="whitespace-nowrap">{cost.source || '기타'}</span>
                               {cost.note ? <span> · {cost.note}</span> : null}
                             </div>
                           </div>
@@ -459,12 +468,13 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                               <input
                                 type="number"
                                 min={0}
-                                value={cost.costUsd}
+                                value={cost.costUsd || 0}
                                 onChange={(e) => {
                                   const usd = Number(e.target.value) || 0;
+                                  const rate = selectedReservation.exchangeRate || 1400;
                                   handleCostChange(selectedReservation, cost.id, {
                                     costUsd: usd,
-                                    costKrw: Math.round(usd * selectedReservation.exchangeRate),
+                                    costKrw: Math.round(usd * rate),
                                   });
                                 }}
                                 className="w-20 text-right text-xs font-mono font-semibold text-slate-900 bg-transparent focus:outline-none"

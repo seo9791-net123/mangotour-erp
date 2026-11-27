@@ -58,12 +58,16 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     return cells;
   }, [year, month]);
 
+  const safeReservations = Array.isArray(reservations) ? reservations : [];
+
   // Map dateStr -> entries
   const entriesByDate = useMemo(() => {
     const map = new Map<string, CalendarEntry[]>();
-    reservations.forEach((res) => {
-      if (res.status === '취소') return;
-      res.scheduleItems.forEach((sch) => {
+    safeReservations.forEach((res) => {
+      if (!res || res.status === '취소') return;
+      const items = Array.isArray(res.scheduleItems) ? res.scheduleItems : [];
+      items.forEach((sch) => {
+        if (!sch || !sch.date) return;
         if (typeFilter !== 'ALL' && sch.type !== typeFilter) return;
         const list = map.get(sch.date) || [];
         list.push({ reservation: res, schedule: sch });
@@ -75,31 +79,33 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       list.sort((a, b) => (a.schedule.time || '').localeCompare(b.schedule.time || ''));
     });
     return map;
-  }, [reservations, typeFilter]);
+  }, [safeReservations, typeFilter]);
 
   // Top 3 KPI stats
   const kpis = useMemo(() => {
-    const activeToursThisMonth = reservations.filter((r) => {
-      if (r.status === '취소') return false;
+    const activeToursThisMonth = safeReservations.filter((r) => {
+      if (!r || r.status === '취소') return false;
+      const items = Array.isArray(r.scheduleItems) ? r.scheduleItems : [];
       return (
-        r.startDate.startsWith(monthPrefix) ||
-        r.endDate.startsWith(monthPrefix) ||
-        r.scheduleItems.some((s) => s.date.startsWith(monthPrefix))
+        (r.startDate || '').startsWith(monthPrefix) ||
+        (r.endDate || '').startsWith(monthPrefix) ||
+        items.some((s) => (s?.date || '').startsWith(monthPrefix))
       );
     }).length;
 
     let pendingGolfCount = 0;
-    reservations.forEach((r) => {
-      if (r.status === '취소') return;
-      r.scheduleItems.forEach((s) => {
-        if (s.type === 'GOLF' && (s.golfBookingStatus || '대기') === '대기') {
+    safeReservations.forEach((r) => {
+      if (!r || r.status === '취소') return;
+      const items = Array.isArray(r.scheduleItems) ? r.scheduleItems : [];
+      items.forEach((s) => {
+        if (s && s.type === 'GOLF' && (s.golfBookingStatus || '대기') === '대기') {
           pendingGolfCount += 1;
         }
       });
     });
 
-    const unpaidCount = reservations.filter((r) => {
-      if (r.status === '취소') return false;
+    const unpaidCount = safeReservations.filter((r) => {
+      if (!r || r.status === '취소') return false;
       return calculateReservationFinance(r).isUnpaid;
     }).length;
 
@@ -108,22 +114,23 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       pendingGolfCount,
       unpaidCount,
     };
-  }, [reservations, monthPrefix]);
+  }, [safeReservations, monthPrefix]);
 
   const selectedEntries = useMemo(() => {
     if (!selectedDay) return [];
     const list: CalendarEntry[] = [];
-    reservations.forEach((res) => {
-      if (res.status === '취소') return;
-      res.scheduleItems.forEach((sch) => {
-        if (sch.date === selectedDay) {
+    safeReservations.forEach((res) => {
+      if (!res || res.status === '취소') return;
+      const items = Array.isArray(res.scheduleItems) ? res.scheduleItems : [];
+      items.forEach((sch) => {
+        if (sch && sch.date === selectedDay) {
           list.push({ reservation: res, schedule: sch });
         }
       });
     });
     list.sort((a, b) => (a.schedule.time || '').localeCompare(b.schedule.time || ''));
     return list;
-  }, [reservations, selectedDay]);
+  }, [safeReservations, selectedDay]);
 
   const moveMonth = (delta: number) => {
     setCurrentDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));

@@ -44,6 +44,8 @@ export const BackupModal: React.FC<BackupModalProps> = ({
     }
   };
 
+  const safeReservations = Array.isArray(reservations) ? reservations : [];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 backdrop-blur-[1px] p-0 sm:p-4 overflow-hidden">
       <div className="bg-white border-0 sm:border border-slate-200 rounded-none sm:rounded-2xl w-full max-w-full sm:max-w-md h-full sm:h-auto sm:max-h-[90vh] flex flex-col shadow-xl overflow-hidden">
@@ -67,7 +69,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
 
           <button
             type="button"
-            onClick={() => exportBackupJson(reservations)}
+            onClick={() => exportBackupJson(safeReservations)}
             className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-slate-200 hover:border-[#065F46] hover:bg-emerald-50/30 transition-colors cursor-pointer"
           >
             <div className="text-left">
@@ -75,7 +77,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                 전체 데이터 백업 다운로드 (JSON)
               </div>
               <div className="text-xs text-slate-500 mt-0.5">
-                현재 저장된 예약 {reservations.length}건 내보내기
+                현재 저장된 예약 {safeReservations.length}건 내보내기
               </div>
             </div>
             <Download className="w-4 h-4 text-[#065F46]" />

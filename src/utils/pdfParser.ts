@@ -109,39 +109,49 @@ export function generateUuid(): string {
 
 export function buildReservationFromParsedQuote(parsed: ParsedQuoteResult): Reservation {
   const id = generateUuid();
-  const exchangeRate = parsed.exchangeRate > 0 ? parsed.exchangeRate : 1400;
-  const totalPriceUsd = parsed.totalPriceUsd || Math.round((parsed.totalPriceKrw || 0) / exchangeRate);
-  const totalPriceKrw = parsed.totalPriceKrw || Math.round(totalPriceUsd * exchangeRate);
+  const exchangeRate = Number(parsed?.exchangeRate) > 0 ? Number(parsed.exchangeRate) : 1400;
+  const totalPriceUsd = Number(parsed?.totalPriceUsd) || Math.round((Number(parsed?.totalPriceKrw) || 0) / exchangeRate);
+  const totalPriceKrw = Number(parsed?.totalPriceKrw) || Math.round(totalPriceUsd * exchangeRate);
 
-  const dateCode = (parsed.startDate || '2026-12-01').replace(/-/g, '').slice(2, 6);
+  const fallbackDate = new Date().toISOString().slice(0, 10);
+  const startDate = parsed?.startDate || fallbackDate;
+  const endDate = parsed?.endDate || startDate;
+
+  const dateCode = startDate.replace(/-/g, '').slice(2, 6) || '2611';
   const bookingCode = `MT-${dateCode}-${Math.floor(100 + Math.random() * 900)}`;
 
-  const scheduleItems: ScheduleItem[] = (parsed.scheduleItems || []).map((item, idx) => {
-    const resolvedType = classifyScheduleType(item.title, item.detail, item.type);
+  const rawSchedules = Array.isArray(parsed?.scheduleItems) ? parsed.scheduleItems : [];
+  const rawIncludedCosts = Array.isArray(parsed?.includedCostItems) ? parsed.includedCostItems : [];
+  const rawRevenueItems = Array.isArray(parsed?.revenueItems) ? parsed.revenueItems : [];
+
+  const scheduleItems: ScheduleItem[] = rawSchedules.map((item, idx) => {
+    const title = item?.title || '일정';
+    const detail = item?.detail || '';
+    const resolvedType = classifyScheduleType(title, detail, item?.type);
     return {
       id: `${id}-sch-${idx + 1}`,
-      date: item.date || parsed.startDate,
-      dayNumber: item.dayNumber || 1,
-      time: item.time || (resolvedType === 'GOLF' ? '07:30' : '10:00'),
-      title: item.title,
-      detail: item.detail || '',
+      date: item?.date || startDate,
+      dayNumber: Number(item?.dayNumber) || idx + 1,
+      time: item?.time || (resolvedType === 'GOLF' ? '07:30' : '10:00'),
+      title,
+      detail,
       type: resolvedType,
-      golfCourseName: resolvedType === 'GOLF' ? item.golfCourseName || item.title : undefined,
-      teeOffTime: resolvedType === 'GOLF' ? item.teeOffTime || item.time || '07:30' : undefined,
+      golfCourseName: resolvedType === 'GOLF' ? item?.golfCourseName || title : undefined,
+      teeOffTime: resolvedType === 'GOLF' ? item?.teeOffTime || item?.time || '07:30' : undefined,
       golfBookingStatus: resolvedType === 'GOLF' ? '대기' : undefined,
       vehicleGuideNote: resolvedType === 'GOLF' ? '차량/캐디 배정 확인 필요' : '차량/가이드 배정 대기',
     };
   });
 
-  const includedCosts: CostItem[] = (parsed.includedCostItems || []).map((item, idx) => ({
+  const includedCosts: CostItem[] = rawIncludedCosts.map((item, idx) => ({
     id: `${id}-cost-inc-${idx + 1}`,
-    title: item.title,
-    category: normalizeCostCategory(item.category || item.title),
+    title: item?.title || '포함 항목',
+    category: normalizeCostCategory(item?.category || item?.title || ''),
     source: 'PDF포함',
     costUsd: 0,
     costKrw: 0,
     paid: false,
-    note: item.note || '견적서 포함 항목 — 현지 원가 입력 필요',
+    note: item?.note || '견적서 포함 항목 — 현지 원가 입력 필요',
   }));
 
   const golfCostItems: CostItem[] = scheduleItems
@@ -154,29 +164,32 @@ export function buildReservationFromParsedQuote(parsed: ParsedQuoteResult): Rese
       costUsd: 0,
       costKrw: 0,
       paid: false,
-      note: `${parsed.customerCount}인 기준 현지 부킹 원가`,
+      note: `${Number(parsed?.customerCount) || 1}인 기준 현지 부킹 원가`,
     }));
 
-  const revenueItems = (parsed.revenueItems || []).map((item, idx) => ({
+  const revenueItems = rawRevenueItems.map((item, idx) => ({
     id: `${id}-rev-${idx + 1}`,
-    title: item.title,
-    amountUsd: item.amountUsd || 0,
-    amountKrw: item.amountKrw || Math.round((item.amountUsd || 0) * exchangeRate),
-    note: item.note,
+    title: item?.title || '매출 항목',
+    amountUsd: Number(item?.amountUsd) || 0,
+    amountKrw: Number(item?.amountKrw) || Math.round((Number(item?.amountUsd) || 0) * exchangeRate),
+    note: item?.note,
   }));
+
+  const customerName = parsed?.customerName || '신규 고객';
+  const customerCount = Number(parsed?.customerCount) || 1;
 
   return {
     id,
     bookingCode,
     createdAt: new Date().toISOString(),
-    customerName: parsed.customerName || '신규 고객',
-    customerCount: parsed.customerCount || 1,
-    rawCustomerText: parsed.rawCustomerText || `${parsed.customerName} 고객님 외 ${Math.max(0, (parsed.customerCount || 1) - 1)}인`,
-    destination: parsed.destination || '베트남 호치민',
-    productName: parsed.productName || '호치민 맞춤 골프 & 투어',
-    startDate: parsed.startDate,
-    endDate: parsed.endDate,
-    managerName: parsed.managerName || '김매니저',
+    customerName,
+    customerCount,
+    rawCustomerText: parsed?.rawCustomerText || `${customerName} 고객님 외 ${Math.max(0, customerCount - 1)}인`,
+    destination: parsed?.destination || '베트남 호치민',
+    productName: parsed?.productName || '호치민 맞춤 골프 & 투어',
+    startDate,
+    endDate,
+    managerName: parsed?.managerName || '김매니저',
     status: '예약확정',
     totalPriceUsd,
     totalPriceKrw,

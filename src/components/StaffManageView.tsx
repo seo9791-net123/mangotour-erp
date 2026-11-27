@@ -22,6 +22,8 @@ export const StaffManageView: React.FC<StaffManageViewProps> = ({
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  const safeStaffAccounts = Array.isArray(staffAccounts) ? staffAccounts : [];
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
@@ -40,7 +42,7 @@ export const StaffManageView: React.FC<StaffManageViewProps> = ({
       return;
     }
 
-    if (staffAccounts.some((acc) => acc.username.toLowerCase() === cleanId.toLowerCase())) {
+    if (safeStaffAccounts.some((acc) => (acc.username || '').toLowerCase() === cleanId.toLowerCase())) {
       setErrorMsg('이미 등록된 직원 아이디입니다.');
       return;
     }
@@ -169,7 +171,7 @@ export const StaffManageView: React.FC<StaffManageViewProps> = ({
           <div className="flex items-center gap-2.5 whitespace-nowrap">
             <h2 className="text-base sm:text-lg font-bold text-slate-900">등록된 직원 목록</h2>
             <span className="text-xs font-medium text-slate-500 font-mono">
-              총 {staffAccounts.length}명
+              총 {safeStaffAccounts.length}명
             </span>
           </div>
           <span className="text-xs text-slate-400 whitespace-nowrap">
@@ -191,14 +193,14 @@ export const StaffManageView: React.FC<StaffManageViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm">
-              {staffAccounts.length === 0 ? (
+              {safeStaffAccounts.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-14 text-center text-sm text-slate-500">
                     등록된 직원이 없습니다. 상단에서 신규 직원을 등록해 주세요.
                   </td>
                 </tr>
               ) : (
-                staffAccounts.map((staff) => {
+                safeStaffAccounts.map((staff) => {
                   const isVisible = Boolean(visiblePasswords[staff.id]);
                   const isConfirming = confirmDeleteId === staff.id;
                   return (
@@ -233,7 +235,7 @@ export const StaffManageView: React.FC<StaffManageViewProps> = ({
                         {staff.phone || '-'}
                       </td>
                       <td className="py-3.5 px-3 sm:px-4 font-mono text-xs text-slate-400 whitespace-nowrap">
-                        {staff.createdAt.slice(0, 10)}
+                        {(staff.createdAt || '').slice(0, 10) || '-'}
                       </td>
                       <td className="py-3.5 px-4 sm:px-6 text-right whitespace-nowrap">
                         {!isConfirming ? (

@@ -1,27 +1,35 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
-import type { BookingStatus, CostItem, Reservation, RevenueItem, ScheduleItem } from '../types/erp';
+import type {
+  BookingStatus,
+  CostCategory,
+  CostItem,
+  Reservation,
+  RevenueItem,
+  ScheduleItem,
+  ScheduleType,
+} from '../types/erp';
 
 export interface SupabaseBookingRow {
   id: string;
-  created_at?: string;
-  customer_name: string | null;
-  headcount: number | null;
-  destination: string | null;
-  start_date: string | null;
-  end_date: string | null;
-  duration: string | null;
-  manager: string | null;
-  product_name: string | null;
-  total_usd: number | null;
-  total_krw: number | null;
-  deposit_paid: boolean | null;
-  balance_paid: boolean | null;
-  included_items: unknown;
-  cost_items: unknown;
-  schedules: unknown;
-  inclusions: string | null;
-  exclusions: string | null;
-  status: string | null;
+  created_at?: string | null;
+  customer_name?: string | null;
+  headcount?: number | null;
+  destination?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  duration?: string | null;
+  manager?: string | null;
+  product_name?: string | null;
+  total_usd?: number | null;
+  total_krw?: number | null;
+  deposit_paid?: boolean | null;
+  balance_paid?: boolean | null;
+  included_items?: unknown;
+  cost_items?: unknown;
+  schedules?: unknown;
+  inclusions?: string | null;
+  exclusions?: string | null;
+  status?: string | null;
 }
 
 interface IncludedMetaPayload {
@@ -35,6 +43,40 @@ interface IncludedMetaPayload {
   items?: Array<{ title: string; category?: string; note?: string }>;
 }
 
+function parseArrayField<T>(val: unknown): T[] {
+  if (Array.isArray(val)) return val as T[];
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function parseObjectField<T extends object>(val: unknown): Partial<T> {
+  if (val && typeof val === 'object' && !Array.isArray(val)) {
+    return val as Partial<T>;
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return {};
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Partial<T>;
+      }
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
 function computeDurationText(startDate: string, endDate: string): string {
   if (!startDate || !endDate) return '';
   const start = new Date(startDate);
@@ -45,74 +87,118 @@ function computeDurationText(startDate: string, endDate: string): string {
   return `${diffDays}박 ${diffDays + 1}일`;
 }
 
+function normalizeScheduleItem(raw: Partial<ScheduleItem>, idx: number, fallbackDate: string): ScheduleItem {
+  const type: ScheduleType = raw?.type === 'GOLF' ? 'GOLF' : 'TOUR';
+  return {
+    id: raw?.id || `sch-${idx + 1}-${Math.random().toString(36).slice(2, 6)}`,
+    date: raw?.date || fallbackDate,
+    dayNumber: Number(raw?.dayNumber) || idx + 1,
+    time: raw?.time || (type === 'GOLF' ? '07:30' : '10:00'),
+    title: raw?.title || '일정',
+    detail: raw?.detail || '',
+    type,
+    golfCourseName: raw?.golfCourseName,
+    teeOffTime: raw?.teeOffTime,
+    golfBookingStatus: raw?.golfBookingStatus || (type === 'GOLF' ? '대기' : undefined),
+    vehicleGuideNote: raw?.vehicleGuideNote || '',
+  };
+}
+
+function normalizeCostItem(raw: Partial<CostItem>, idx: number): CostItem {
+  const validCategories: CostCategory[] = ['숙박', '차량', '가이드', '마사지', '골프장', '식사', '기타'];
+  const category = validCategories.includes(raw?.category as CostCategory)
+    ? (raw.category as CostCategory)
+    : '기타';
+  return {
+    id: raw?.id || `cost-${idx + 1}-${Math.random().toString(36).slice(2, 6)}`,
+    title: raw?.title || '원가 항목',
+    category,
+    source: raw?.source || 'PDF포함',
+    costUsd: Number(raw?.costUsd) || 0,
+    costKrw: Number(raw?.costKrw) || 0,
+    paid: Boolean(raw?.paid),
+    note: raw?.note || '',
+  };
+}
+
 export function mapBookingRowToReservation(row: SupabaseBookingRow): Reservation {
-  const startDate = row.start_date || new Date().toISOString().slice(0, 10);
-  const endDate = row.end_date || startDate;
-  const customerName = row.customer_name || '고객';
-  const headcount = Number(row.headcount) || 1;
-  const totalUsd = Number(row.total_usd) || 0;
-  const totalKrw = Number(row.total_krw) || 0;
+  const rowId = String(row?.id || '');
+  const startDate = String(row?.start_date || new Date().toISOString().slice(0, 10));
+  const endDate = String(row?.end_date || startDate);
+  const customerName = String(row?.customer_name || '고객');
+  const headcount = Number(row?.headcount) || 1;
+  const totalUsd = Number(row?.total_usd) || 0;
+  const totalKrw = Number(row?.total_krw) || 0;
 
   let meta: IncludedMetaPayload = {};
-  if (Array.isArray(row.included_items)) {
-    meta = {
-      items: row.included_items as IncludedMetaPayload['items'],
-    };
-  } else if (row.included_items && typeof row.included_items === 'object') {
-    meta = row.included_items as IncludedMetaPayload;
+  const parsedIncludedArray = parseArrayField<{ title: string; category?: string; note?: string }>(
+    row?.included_items
+  );
+  if (parsedIncludedArray.length > 0) {
+    meta = { items: parsedIncludedArray };
+  } else {
+    meta = parseObjectField<IncludedMetaPayload>(row?.included_items);
   }
 
-  const exchangeRate = Number(meta.exchangeRate) || 1400;
-  const dateCode = startDate.replace(/-/g, '').slice(2, 6);
-  const fallbackCode = `MT-${dateCode}-${row.id.slice(0, 3).toUpperCase()}`;
+  const exchangeRate = Number(meta?.exchangeRate) || 1400;
+  const dateCode = startDate.replace(/-/g, '').slice(2, 6) || '2601';
+  const fallbackCode = `MT-${dateCode}-${(rowId.slice(0, 3) || '000').toUpperCase()}`;
 
-  const rawSchedules = Array.isArray(row.schedules) ? (row.schedules as ScheduleItem[]) : [];
-  const rawCosts = Array.isArray(row.cost_items) ? (row.cost_items as CostItem[]) : [];
-  const rawRevenue = Array.isArray(meta.revenueItems) ? meta.revenueItems : [];
+  const rawSchedules = parseArrayField<Partial<ScheduleItem>>(row?.schedules).map((s, idx) =>
+    normalizeScheduleItem(s, idx, startDate)
+  );
+  const rawCosts = parseArrayField<Partial<CostItem>>(row?.cost_items).map((c, idx) =>
+    normalizeCostItem(c, idx)
+  );
+  const rawRevenue = parseArrayField<RevenueItem>(meta?.revenueItems);
 
   return {
-    id: row.id,
-    bookingCode: meta.bookingCode || fallbackCode,
-    createdAt: row.created_at || new Date().toISOString(),
+    id: rowId,
+    bookingCode: meta?.bookingCode || fallbackCode,
+    createdAt: row?.created_at || new Date().toISOString(),
     customerName,
     customerCount: headcount,
     rawCustomerText:
-      meta.rawCustomerText ||
+      meta?.rawCustomerText ||
       `${customerName} 고객님 외 ${Math.max(0, headcount - 1)}인`,
-    destination: row.destination || '베트남 호치민',
-    productName: row.product_name || '호치민 골프 & 투어',
+    destination: row?.destination || '베트남 호치민',
+    productName: row?.product_name || '호치민 골프 & 투어',
     startDate,
     endDate,
-    duration: row.duration || computeDurationText(startDate, endDate),
-    managerName: row.manager || '담당자 미지정',
-    status: (row.status as BookingStatus) || '예약확정',
+    duration: row?.duration || computeDurationText(startDate, endDate),
+    managerName: row?.manager || '담당자 미지정',
+    status: (row?.status as BookingStatus) || '예약확정',
     totalPriceUsd: totalUsd,
     totalPriceKrw: totalKrw || Math.round(totalUsd * exchangeRate),
     exchangeRate,
-    depositPaid: Boolean(row.deposit_paid),
+    depositPaid: Boolean(row?.deposit_paid),
     depositAmountUsd:
-      typeof meta.depositAmountUsd === 'number'
+      typeof meta?.depositAmountUsd === 'number'
         ? meta.depositAmountUsd
         : Math.round(totalUsd * 0.3),
-    balancePaid: Boolean(row.balance_paid),
+    balancePaid: Boolean(row?.balance_paid),
     balanceAmountUsd:
-      typeof meta.balanceAmountUsd === 'number'
+      typeof meta?.balanceAmountUsd === 'number'
         ? meta.balanceAmountUsd
         : totalUsd - Math.round(totalUsd * 0.3),
     revenueItems: rawRevenue,
     costItems: rawCosts,
     scheduleItems: rawSchedules,
-    inclusions: row.inclusions || '',
-    exclusions: row.exclusions || '',
-    memo: meta.memo ?? row.exclusions ?? '',
+    inclusions: row?.inclusions || '',
+    exclusions: row?.exclusions || '',
+    memo: meta?.memo ?? row?.exclusions ?? '',
   };
 }
 
 export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow {
+  const safeCostItems = Array.isArray(res?.costItems) ? res.costItems : [];
+  const safeScheduleItems = Array.isArray(res?.scheduleItems) ? res.scheduleItems : [];
+  const safeRevenueItems = Array.isArray(res?.revenueItems) ? res.revenueItems : [];
+
   const duration = res.duration || computeDurationText(res.startDate, res.endDate);
   const inclusionsText =
     res.inclusions ||
-    res.costItems
+    safeCostItems
       .filter((c) => c.source === 'PDF포함')
       .map((c) => c.title)
       .join(', ');
@@ -123,9 +209,9 @@ export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow
     exchangeRate: res.exchangeRate,
     depositAmountUsd: res.depositAmountUsd,
     balanceAmountUsd: res.balanceAmountUsd,
-    revenueItems: res.revenueItems,
+    revenueItems: safeRevenueItems,
     memo: res.memo || '',
-    items: res.costItems
+    items: safeCostItems
       .filter((c) => c.source === 'PDF포함')
       .map((c) => ({ title: c.title, category: c.category, note: c.note })),
   };
@@ -146,8 +232,8 @@ export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow
     deposit_paid: Boolean(res.depositPaid),
     balance_paid: Boolean(res.balancePaid),
     included_items: includedMeta,
-    cost_items: res.costItems,
-    schedules: res.scheduleItems,
+    cost_items: safeCostItems,
+    schedules: safeScheduleItems,
     inclusions: inclusionsText,
     exclusions: res.exclusions || res.memo || '',
     status: res.status,
@@ -173,7 +259,8 @@ export async function fetchBookings(): Promise<Reservation[]> {
   if (error) {
     throw new Error(`Supabase 예약 조회 실패: ${error.message}`);
   }
-  return ((data || []) as SupabaseBookingRow[]).map(mapBookingRowToReservation);
+  const rows = Array.isArray(data) ? data : [];
+  return (rows as SupabaseBookingRow[]).map(mapBookingRowToReservation);
 }
 
 export async function createBooking(reservation: Reservation): Promise<Reservation> {
@@ -188,7 +275,7 @@ export async function createBooking(reservation: Reservation): Promise<Reservati
   if (error) {
     throw new Error(`Supabase 예약 저장 실패: ${error.message}`);
   }
-  return mapBookingRowToReservation(data as SupabaseBookingRow);
+  return mapBookingRowToReservation((data || row) as SupabaseBookingRow);
 }
 
 export async function updateBooking(reservation: Reservation): Promise<Reservation> {
@@ -206,7 +293,7 @@ export async function updateBooking(reservation: Reservation): Promise<Reservati
   if (error) {
     throw new Error(`Supabase 예약 수정 실패: ${error.message}`);
   }
-  return mapBookingRowToReservation(data as SupabaseBookingRow);
+  return mapBookingRowToReservation((data || row) as SupabaseBookingRow);
 }
 
 export async function deleteBooking(id: string): Promise<void> {
@@ -220,7 +307,8 @@ export async function deleteBooking(id: string): Promise<void> {
 
 export async function upsertBookingsBatch(reservations: Reservation[]): Promise<Reservation[]> {
   const client = assertSupabase();
-  const rows = reservations.map(mapReservationToBookingRow);
+  const safeList = Array.isArray(reservations) ? reservations : [];
+  const rows = safeList.map(mapReservationToBookingRow);
   const { data, error } = await client
     .from('bookings')
     .upsert(rows, { onConflict: 'id' })
@@ -229,7 +317,8 @@ export async function upsertBookingsBatch(reservations: Reservation[]): Promise<
   if (error) {
     throw new Error(`Supabase 일괄 저장 실패: ${error.message}`);
   }
-  return ((data || []) as SupabaseBookingRow[]).map(mapBookingRowToReservation);
+  const resultRows = Array.isArray(data) ? data : [];
+  return (resultRows as SupabaseBookingRow[]).map(mapBookingRowToReservation);
 }
 
 export function subscribeToBookingsRealtime(handlers: {
@@ -249,10 +338,13 @@ export function subscribeToBookingsRealtime(handlers: {
       { event: '*', schema: 'public', table: 'bookings' },
       (payload) => {
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-          const mapped = mapBookingRowToReservation(payload.new as SupabaseBookingRow);
-          handlers.onInsertOrUpdate(mapped);
+          const rawNew = payload.new as SupabaseBookingRow | null | undefined;
+          if (rawNew && rawNew.id) {
+            const mapped = mapBookingRowToReservation(rawNew);
+            handlers.onInsertOrUpdate(mapped);
+          }
         } else if (payload.eventType === 'DELETE') {
-          const deletedId = (payload.old as { id?: string })?.id;
+          const deletedId = (payload.old as { id?: string } | null | undefined)?.id;
           if (deletedId) {
             handlers.onDelete(deletedId);
           }

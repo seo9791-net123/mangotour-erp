@@ -33,6 +33,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
 }) => {
   const isAdmin = role === 'admin';
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const scheduleItems = Array.isArray(reservation?.scheduleItems) ? reservation.scheduleItems : [];
+  const revenueItems = Array.isArray(reservation?.revenueItems) ? reservation.revenueItems : [];
 
   useBodyScrollLock(true);
 
@@ -114,7 +116,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold text-slate-900">
-                일정 및 티오프·배정 관리 ({reservation.scheduleItems.length}건)
+                일정 및 티오프·배정 관리 ({scheduleItems.length}건)
               </h3>
               <span className="text-xs text-slate-500">
                 티타임, 부킹 상태, 차량/가이드 메모를 바로 수정할 수 있습니다.
@@ -122,7 +124,12 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
             </div>
 
             <div className="space-y-3">
-              {reservation.scheduleItems.map((sch) => {
+              {scheduleItems.length === 0 ? (
+                <div className="border border-slate-200 rounded-xl p-6 text-center text-xs text-slate-400">
+                  등록된 세부 일정이 없습니다.
+                </div>
+              ) : (
+                scheduleItems.map((sch) => {
                 const isGolf = sch.type === 'GOLF';
                 return (
                   <div
@@ -214,7 +221,8 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                     </div>
                   </div>
                 );
-              })}
+              })
+              )}
             </div>
           </div>
 
@@ -233,12 +241,13 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                     </label>
                     <input
                       type="number"
-                      value={reservation.totalPriceUsd}
+                      value={reservation.totalPriceUsd || 0}
                       onChange={(e) => {
                         const usd = Number(e.target.value) || 0;
+                        const rate = reservation.exchangeRate || 1400;
                         onUpdateReservation(reservation.id, {
                           totalPriceUsd: usd,
-                          totalPriceKrw: Math.round(usd * reservation.exchangeRate),
+                          totalPriceKrw: Math.round(usd * rate),
                         });
                       }}
                       className="w-full px-3 py-2 text-sm font-mono font-semibold bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-[#065F46]"
@@ -254,9 +263,9 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                   </div>
                 </div>
 
-                {reservation.revenueItems.length > 0 && (
+                {revenueItems.length > 0 && (
                   <div className="border border-slate-200 rounded-xl divide-y divide-slate-100">
-                    {reservation.revenueItems.map((rev) => (
+                    {revenueItems.map((rev) => (
                       <div
                         key={rev.id}
                         className="px-4 py-2.5 flex items-center justify-between text-xs"

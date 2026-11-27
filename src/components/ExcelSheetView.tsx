@@ -32,27 +32,31 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
   const [activeSheet, setActiveSheet] = useState<SheetTab>('master');
   const [searchQuery, setSearchQuery] = useState('');
 
+  const safeReservations = Array.isArray(reservations) ? reservations : [];
+  const safeExcelRows = Array.isArray(excelRows) ? excelRows : [];
+
   // Master sheet computations
   const filteredReservations = useMemo(() => {
-    if (!searchQuery.trim()) return reservations;
+    if (!searchQuery.trim()) return safeReservations;
     const q = searchQuery.trim().toLowerCase();
-    return reservations.filter(
+    return safeReservations.filter(
       (r) =>
-        r.customerName.toLowerCase().includes(q) ||
-        r.productName.toLowerCase().includes(q) ||
-        r.bookingCode.toLowerCase().includes(q) ||
-        r.managerName.toLowerCase().includes(q)
+        Boolean(r) &&
+        ((r.customerName || '').toLowerCase().includes(q) ||
+          (r.productName || '').toLowerCase().includes(q) ||
+          (r.bookingCode || '').toLowerCase().includes(q) ||
+          (r.managerName || '').toLowerCase().includes(q))
     );
-  }, [reservations, searchQuery]);
+  }, [safeReservations, searchQuery]);
 
   const masterTotals = useMemo(() => {
     let revenueUsd = 0;
     let costUsd = 0;
     let profitUsd = 0;
     filteredReservations.forEach((r) => {
-      if (r.status === '취소') return;
+      if (!r || r.status === '취소') return;
       const fin = calculateReservationFinance(r);
-      revenueUsd += r.totalPriceUsd || 0;
+      revenueUsd += Number(r.totalPriceUsd) || 0;
       costUsd += fin.totalCostUsd;
       profitUsd += fin.netProfitUsd;
     });
@@ -61,20 +65,21 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
 
   // Custom Ledger sheet computations
   const filteredExcelRows = useMemo(() => {
-    if (!searchQuery.trim()) return excelRows;
+    if (!searchQuery.trim()) return safeExcelRows;
     const q = searchQuery.trim().toLowerCase();
-    return excelRows.filter(
+    return safeExcelRows.filter(
       (row) =>
-        row.category.toLowerCase().includes(q) ||
-        row.customerOrVendor.toLowerCase().includes(q) ||
-        row.description.toLowerCase().includes(q) ||
-        row.note.toLowerCase().includes(q)
+        Boolean(row) &&
+        ((row.category || '').toLowerCase().includes(q) ||
+          (row.customerOrVendor || '').toLowerCase().includes(q) ||
+          (row.description || '').toLowerCase().includes(q) ||
+          (row.note || '').toLowerCase().includes(q))
     );
-  }, [excelRows, searchQuery]);
+  }, [safeExcelRows, searchQuery]);
 
   const ledgerTotals = useMemo(() => {
-    const income = filteredExcelRows.reduce((s, r) => s + (Number(r.incomeUsd) || 0), 0);
-    const expense = filteredExcelRows.reduce((s, r) => s + (Number(r.expenseUsd) || 0), 0);
+    const income = filteredExcelRows.reduce((s, r) => s + (Number(r?.incomeUsd) || 0), 0);
+    const expense = filteredExcelRows.reduce((s, r) => s + (Number(r?.expenseUsd) || 0), 0);
     return { income, expense, net: income - expense };
   }, [filteredExcelRows]);
 
@@ -122,15 +127,15 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
       status: '대기',
       note: '',
     };
-    onUpdateExcelRows([...excelRows, newRow]);
+    onUpdateExcelRows([...safeExcelRows, newRow]);
   };
 
   const handleUpdateLedgerCell = (id: string, updates: Partial<ExcelSheetRow>) => {
-    onUpdateExcelRows(excelRows.map((row) => (row.id === id ? { ...row, ...updates } : row)));
+    onUpdateExcelRows(safeExcelRows.map((row) => (row.id === id ? { ...row, ...updates } : row)));
   };
 
   const handleDeleteLedgerRow = (id: string) => {
-    onUpdateExcelRows(excelRows.filter((row) => row.id !== id));
+    onUpdateExcelRows(safeExcelRows.filter((row) => row.id !== id));
   };
 
   return (
@@ -327,12 +332,13 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
                       <td className="p-0 border-r border-slate-200">
                         <input
                           type="number"
-                          value={res.totalPriceUsd}
+                          value={res.totalPriceUsd || 0}
                           onChange={(e) => {
                             const usd = Number(e.target.value) || 0;
+                            const rate = res.exchangeRate || 1400;
                             onUpdateReservation(res.id, {
                               totalPriceUsd: usd,
-                              totalPriceKrw: Math.round(usd * res.exchangeRate),
+                              totalPriceKrw: Math.round(usd * rate),
                             });
                           }}
                           className="w-24 px-2.5 py-2 text-right font-mono font-semibold text-slate-900 bg-transparent focus:bg-white focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#065F46]"

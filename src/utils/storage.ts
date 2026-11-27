@@ -156,13 +156,14 @@ export function formatKrw(amount: number): string {
 }
 
 export function calculateReservationFinance(res: Reservation) {
-  const totalCostUsd = res.costItems.reduce((sum, item) => sum + (Number(item.costUsd) || 0), 0);
-  const totalCostKrw = res.costItems.reduce((sum, item) => sum + (Number(item.costKrw) || 0), 0);
-  const netProfitUsd = (res.totalPriceUsd || 0) - totalCostUsd;
-  const netProfitKrw = (res.totalPriceKrw || 0) - totalCostKrw;
-  const marginPercent = res.totalPriceUsd > 0 ? (netProfitUsd / res.totalPriceUsd) * 100 : 0;
-  const isUnpaid = !res.depositPaid || !res.balancePaid;
-  const paidCostCount = res.costItems.filter((c) => c.paid).length;
+  const costItems = Array.isArray(res?.costItems) ? res.costItems : [];
+  const totalCostUsd = costItems.reduce((sum, item) => sum + (Number(item?.costUsd) || 0), 0);
+  const totalCostKrw = costItems.reduce((sum, item) => sum + (Number(item?.costKrw) || 0), 0);
+  const netProfitUsd = (Number(res?.totalPriceUsd) || 0) - totalCostUsd;
+  const netProfitKrw = (Number(res?.totalPriceKrw) || 0) - totalCostKrw;
+  const marginPercent = (Number(res?.totalPriceUsd) || 0) > 0 ? (netProfitUsd / Number(res.totalPriceUsd)) * 100 : 0;
+  const isUnpaid = !res?.depositPaid || !res?.balancePaid;
+  const paidCostCount = costItems.filter((c) => Boolean(c?.paid)).length;
 
   return {
     totalCostUsd,
@@ -172,7 +173,7 @@ export function calculateReservationFinance(res: Reservation) {
     marginPercent,
     isUnpaid,
     paidCostCount,
-    totalCostCount: res.costItems.length,
+    totalCostCount: costItems.length,
   };
 }
 
@@ -186,6 +187,7 @@ function escapeCsvCell(value: string | number | boolean): string {
 
 export function exportReservationsToCsv(reservations: Reservation[], role: UserRole): void {
   const isAdmin = role === 'admin';
+  const safeReservations = Array.isArray(reservations) ? reservations : [];
   const headers = isAdmin
     ? [
         '예약코드',
@@ -207,34 +209,35 @@ export function exportReservationsToCsv(reservations: Reservation[], role: UserR
       ]
     : ['예약코드', '진행상태', '고객명', '총인원', '여행지', '상품명', '출발일', '종료일', '담당자', '일정수'];
 
-  const rows = reservations.map((r) => {
+  const rows = safeReservations.map((r) => {
+    const scheduleCount = Array.isArray(r?.scheduleItems) ? r.scheduleItems.length : 0;
     if (!isAdmin) {
       return [
-        r.bookingCode,
-        r.status,
-        r.customerName,
-        r.customerCount,
-        r.destination,
-        r.productName,
-        r.startDate,
-        r.endDate,
-        r.managerName,
-        r.scheduleItems.length,
+        r.bookingCode || '',
+        r.status || '',
+        r.customerName || '',
+        r.customerCount || 0,
+        r.destination || '',
+        r.productName || '',
+        r.startDate || '',
+        r.endDate || '',
+        r.managerName || '',
+        scheduleCount,
       ];
     }
     const fin = calculateReservationFinance(r);
     return [
-      r.bookingCode,
-      r.status,
-      r.customerName,
-      r.customerCount,
-      r.destination,
-      r.productName,
-      r.startDate,
-      r.endDate,
-      r.managerName,
-      r.totalPriceUsd,
-      r.totalPriceKrw,
+      r.bookingCode || '',
+      r.status || '',
+      r.customerName || '',
+      r.customerCount || 0,
+      r.destination || '',
+      r.productName || '',
+      r.startDate || '',
+      r.endDate || '',
+      r.managerName || '',
+      r.totalPriceUsd || 0,
+      r.totalPriceKrw || 0,
       fin.totalCostUsd,
       fin.netProfitUsd,
       fin.marginPercent.toFixed(1),

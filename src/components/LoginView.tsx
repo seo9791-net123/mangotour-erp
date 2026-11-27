@@ -12,6 +12,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ staffAccounts, onLogin }) 
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
+  const safeStaffAccounts = Array.isArray(staffAccounts) ? staffAccounts : [];
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -26,7 +28,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ staffAccounts, onLogin }) 
       return;
     }
 
-    const matchedStaff = staffAccounts.find(
+    const matchedStaff = safeStaffAccounts.find(
       (acc) => acc.username === trimmedId && acc.password === password
     );
     if (matchedStaff) {
@@ -42,7 +44,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ staffAccounts, onLogin }) 
   };
 
   const handleQuickStaffLogin = () => {
-    const demoStaff = staffAccounts[0];
+    const demoStaff = safeStaffAccounts[0];
     onLogin({
       username: demoStaff?.username || 'staff',
       role: 'staff',

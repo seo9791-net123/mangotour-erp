@@ -57,8 +57,12 @@ export default function App() {
   const [backupModalOpen, setBackupModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string>('');
 
-  const reservationsRef = useRef<Reservation[]>(reservations);
-  reservationsRef.current = reservations;
+  const safeReservations = Array.isArray(reservations) ? reservations : [];
+  const safeStaffAccounts = Array.isArray(staffAccounts) ? staffAccounts : [];
+  const safeExcelRows = Array.isArray(excelRows) ? excelRows : [];
+
+  const reservationsRef = useRef<Reservation[]>(safeReservations);
+  reservationsRef.current = safeReservations;
 
   const pendingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -74,6 +78,7 @@ export default function App() {
   // Load initial bookings from Supabase & subscribe to realtime updates
   useEffect(() => {
     if (!isSupabaseConfigured) {
+      setReservations([]);
       setLoadingBookings(false);
       setSupabaseError(
         'Supabase 환경변수(VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)가 설정되지 않았습니다.'
@@ -89,10 +94,11 @@ export default function App() {
       try {
         const list = await fetchBookings();
         if (!cancelled) {
-          setReservations(list);
+          setReservations(Array.isArray(list) ? list : []);
         }
       } catch (err: unknown) {
         if (!cancelled) {
+          setReservations([]);
           const msg = err instanceof Error ? err.message : 'Supabase 데이터를 불러오지 못했습니다.';
           setSupabaseError(msg);
         }
@@ -107,20 +113,23 @@ export default function App() {
 
     const unsubscribe = subscribeToBookingsRealtime({
       onInsertOrUpdate: (incoming) => {
+        if (!incoming?.id) return;
         // Skip echo overwrite while user is actively typing/debouncing on that reservation
         if (pendingTimersRef.current.has(incoming.id)) {
           return;
         }
         setReservations((prev) => {
-          const exists = prev.some((r) => r.id === incoming.id);
+          const list = Array.isArray(prev) ? prev : [];
+          const exists = list.some((r) => r.id === incoming.id);
           if (exists) {
-            return prev.map((r) => (r.id === incoming.id ? incoming : r));
+            return list.map((r) => (r.id === incoming.id ? incoming : r));
           }
-          return [incoming, ...prev];
+          return [incoming, ...list];
         });
       },
       onDelete: (deletedId) => {
-        setReservations((prev) => prev.filter((r) => r.id !== deletedId));
+        if (!deletedId) return;
+        setReservations((prev) => (Array.isArray(prev) ? prev.filter((r) => r.id !== deletedId) : []));
         setDetailReservationId((prevId) => (prevId === deletedId ? null : prevId));
       },
     });
@@ -134,12 +143,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    saveStaffAccounts(staffAccounts);
-  }, [staffAccounts]);
+    saveStaffAccounts(safeStaffAccounts);
+  }, [safeStaffAccounts]);
 
   useEffect(() => {
-    saveExcelSheetRows(excelRows);
-  }, [excelRows]);
+    saveExcelSheetRows(safeExcelRows);
+  }, [safeExcelRows]);
 
   useEffect(() => {
     if (
@@ -187,7 +196,7 @@ export default function App() {
   };
 
   const handleAddReservation = async (newRes: Reservation) => {
-    setReservations((prev) => [newRes, ...prev]);
+    setReservations((prev) => [newRes, ...(Array.isArray(prev) ? prev : [])]);
 
     if (!isSupabaseConfigured) {
       showToast('Supabase가 연결되지 않아 임시로 화면에만 표시됩니다.');
@@ -196,21 +205,27 @@ export default function App() {
 
     try {
       const saved = await createBooking(newRes);
-      setReservations((prev) => prev.map((r) => (r.id === newRes.id ? saved : r)));
-      showToast(`${saved.customerName} 고객님 예약이 Supabase에 저장되었습니다.`);
+      setReservations((prev) =>
+        (Array.isArray(prev) ? prev : []).map((r) => (r.id === newRes.id ? saved : r))
+      );
+      showToast(`${saved.customerName || newRes.customerName} 고객님 예약이 Supabase에 저장되었습니다.`);
     } catch (err: unknown) {
-      setReservations((prev) => prev.filter((r) => r.id !== newRes.id));
+      setReservations((prev) =>
+        (Array.isArray(prev) ? prev : []).filter((r) => r.id !== newRes.id)
+      );
       const msg = err instanceof Error ? err.message : '예약 저장 실패';
       showToast(msg);
     }
   };
 
   const handleUpdateReservation = (id: string, updates: Partial<Reservation>) => {
-    const current = reservationsRef.current.find((r) => r.id === id);
+    const current = (reservationsRef.current || []).find((r) => r.id === id);
     if (!current) return;
 
     const nextReservation: Reservation = { ...current, ...updates };
-    setReservations((prev) => prev.map((r) => (r.id === id ? nextReservation : r)));
+    setReservations((prev) =>
+      (Array.isArray(prev) ? prev : []).map((r) => (r.id === id ? nextReservation : r))
+    );
     scheduleSupabaseUpdate(id, nextReservation);
   };
 
@@ -219,16 +234,19 @@ export default function App() {
     scheduleId: string,
     updates: Partial<ScheduleItem>
   ) => {
-    const current = reservationsRef.current.find((r) => r.id === reservationId);
+    const current = (reservationsRef.current || []).find((r) => r.id === reservationId);
     if (!current) return;
 
+    const currentSchedules = Array.isArray(current.scheduleItems) ? current.scheduleItems : [];
     const nextReservation: Reservation = {
       ...current,
-      scheduleItems: current.scheduleItems.map((s) =>
+      scheduleItems: currentSchedules.map((s) =>
         s.id === scheduleId ? { ...s, ...updates } : s
       ),
     };
-    setReservations((prev) => prev.map((r) => (r.id === reservationId ? nextReservation : r)));
+    setReservations((prev) =>
+      (Array.isArray(prev) ? prev : []).map((r) => (r.id === reservationId ? nextReservation : r))
+    );
     scheduleSupabaseUpdate(reservationId, nextReservation);
   };
 
@@ -241,8 +259,8 @@ export default function App() {
       pendingTimersRef.current.delete(id);
     }
 
-    const backupTarget = reservationsRef.current.find((r) => r.id === id);
-    setReservations((prev) => prev.filter((r) => r.id !== id));
+    const backupTarget = (reservationsRef.current || []).find((r) => r.id === id);
+    setReservations((prev) => (Array.isArray(prev) ? prev.filter((r) => r.id !== id) : []));
     setDetailReservationId(null);
 
     if (!isSupabaseConfigured) {
@@ -255,7 +273,7 @@ export default function App() {
       showToast('Supabase에서 예약 내역이 삭제되었습니다.');
     } catch (err: unknown) {
       if (backupTarget) {
-        setReservations((prev) => [backupTarget, ...prev]);
+        setReservations((prev) => [backupTarget, ...(Array.isArray(prev) ? prev : [])]);
       }
       const msg = err instanceof Error ? err.message : '예약 삭제 실패';
       showToast(msg);
@@ -263,16 +281,18 @@ export default function App() {
   };
 
   const handleRestoreReservations = async (nextList: Reservation[]) => {
+    const safeList = Array.isArray(nextList) ? nextList : [];
     if (!isSupabaseConfigured) {
-      setReservations(nextList);
-      showToast(`총 ${nextList.length}건의 예약 데이터가 화면에 복원되었습니다.`);
+      setReservations(safeList);
+      showToast(`총 ${safeList.length}건의 예약 데이터가 화면에 복원되었습니다.`);
       return;
     }
 
     try {
-      const savedList = await upsertBookingsBatch(nextList);
-      setReservations(savedList);
-      showToast(`총 ${savedList.length}건이 Supabase에 반영되었습니다.`);
+      const savedList = await upsertBookingsBatch(safeList);
+      const safeSaved = Array.isArray(savedList) ? savedList : [];
+      setReservations(safeSaved);
+      showToast(`총 ${safeSaved.length}건이 Supabase에 반영되었습니다.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '데이터 복원 실패';
       showToast(msg);
@@ -281,18 +301,18 @@ export default function App() {
 
   const handleAddStaff = (staff: StaffAccount) => {
     if (user?.role !== 'admin') return;
-    setStaffAccounts((prev) => [...prev, staff]);
+    setStaffAccounts((prev) => [...(Array.isArray(prev) ? prev : []), staff]);
     showToast(`${staff.displayName} (${staff.username}) 직원이 등록되었습니다.`);
   };
 
   const handleDeleteStaff = (id: string) => {
     if (user?.role !== 'admin') return;
-    setStaffAccounts((prev) => prev.filter((s) => s.id !== id));
+    setStaffAccounts((prev) => (Array.isArray(prev) ? prev.filter((s) => s.id !== id) : []));
     showToast('직원 계정이 삭제되었습니다.');
   };
 
   if (!user) {
-    return <LoginView staffAccounts={staffAccounts} onLogin={handleLogin} />;
+    return <LoginView staffAccounts={safeStaffAccounts} onLogin={handleLogin} />;
   }
 
   const isAdmin = user.role === 'admin';
@@ -313,7 +333,7 @@ export default function App() {
   ];
 
   const activeReservation = detailReservationId
-    ? reservations.find((r) => r.id === detailReservationId) || null
+    ? safeReservations.find((r) => r.id === detailReservationId) || null
     : null;
 
   const pageTitleMap: Record<MenuTab, string> = {

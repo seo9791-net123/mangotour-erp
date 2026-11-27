@@ -104,19 +104,29 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
     setRenderedPages([]);
   };
 
+  const safeReservations = Array.isArray(reservations) ? reservations : [];
+  const safeRenderedPages = Array.isArray(renderedPages) ? renderedPages : [];
+  const previewSchedules = Array.isArray(previewQuote?.scheduleItems)
+    ? previewQuote.scheduleItems
+    : [];
+  const previewIncludedCosts = Array.isArray(previewQuote?.includedCostItems)
+    ? previewQuote.includedCostItems
+    : [];
+
   const filteredReservations = useMemo(() => {
-    return reservations.filter((r) => {
+    return safeReservations.filter((r) => {
+      if (!r) return false;
       if (statusFilter !== 'ALL' && r.status !== statusFilter) return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.trim().toLowerCase();
       return (
-        r.customerName.toLowerCase().includes(q) ||
-        r.productName.toLowerCase().includes(q) ||
-        r.bookingCode.toLowerCase().includes(q) ||
-        r.destination.toLowerCase().includes(q)
+        (r.customerName || '').toLowerCase().includes(q) ||
+        (r.productName || '').toLowerCase().includes(q) ||
+        (r.bookingCode || '').toLowerCase().includes(q) ||
+        (r.destination || '').toLowerCase().includes(q)
       );
     });
-  }, [reservations, statusFilter, searchQuery]);
+  }, [safeReservations, statusFilter, searchQuery]);
 
   const statusColorClass = (status: BookingStatus) => {
     switch (status) {
@@ -184,9 +194,9 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
               <div className="flex flex-col items-center justify-center gap-3">
                 <Loader2 className="w-8 h-8 text-[#065F46] animate-spin" />
                 <p className="text-sm font-semibold text-slate-800">{statusStep}</p>
-                {renderedPages.length > 0 && (
+                {safeRenderedPages.length > 0 && (
                   <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
-                    {renderedPages.map((p) => (
+                    {safeRenderedPages.map((p) => (
                       <img
                         key={p.pageNumber}
                         src={p.dataUrl}
@@ -360,15 +370,15 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
               <div className="bg-white border border-slate-200 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-xs font-bold text-slate-800">
-                    일정 자동 분류 미리보기 ({previewQuote.scheduleItems.length}건)
+                    일정 자동 분류 미리보기 ({previewSchedules.length}건)
                   </h4>
                   <span className="text-[11px] text-slate-500">
                     골프(초록) · 일반투어(주황)
                   </span>
                 </div>
                 <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                  {previewQuote.scheduleItems.map((item, idx) => {
-                    const resolved = classifyScheduleType(item.title, item.detail, item.type);
+                  {previewSchedules.map((item, idx) => {
+                    const resolved = classifyScheduleType(item.title || '', item.detail || '', item.type);
                     const isGolf = resolved === 'GOLF';
                     return (
                       <div
@@ -424,10 +434,10 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
 
                 <div>
                   <h4 className="text-xs font-bold text-slate-800 mb-2">
-                    &lsquo;포함&rsquo; 항목 → 원가 체크리스트 자동 연동 ({previewQuote.includedCostItems.length}건)
+                    &lsquo;포함&rsquo; 항목 → 원가 체크리스트 자동 연동 ({previewIncludedCosts.length}건)
                   </h4>
                   <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                    {previewQuote.includedCostItems.map((c, idx) => (
+                    {previewIncludedCosts.map((c, idx) => (
                       <div
                         key={idx}
                         className="flex items-center justify-between gap-2 text-xs py-1.5 px-2.5 rounded-lg bg-slate-50 border border-slate-100"
@@ -516,7 +526,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
                   >
                     <td className="py-4 px-6 whitespace-nowrap">
                       <div className="font-mono text-xs font-medium text-slate-900">
-                        {res.startDate} ~ {res.endDate.slice(5)}
+                        {res.startDate || '-'} ~ {(res.endDate || '').slice(5) || '-'}
                       </div>
                       <div className="text-[11px] text-slate-400 font-mono mt-0.5">
                         {res.bookingCode}
@@ -527,7 +537,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
                         {res.customerName}
                       </div>
                       <div className="text-xs text-slate-500 mt-0.5">
-                        총 {res.customerCount}인 · 담당 {res.managerName}
+                        총 {res.customerCount || 1}인 · 담당 {res.managerName || '-'}
                       </div>
                     </td>
                     <td className="py-4 px-4 max-w-xs">
@@ -535,7 +545,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
                         {res.productName}
                       </div>
                       <div className="text-xs text-slate-500 mt-0.5 truncate">
-                        {res.destination} · 일정 {res.scheduleItems.length}건
+                        {res.destination || '-'} · 일정 {(Array.isArray(res.scheduleItems) ? res.scheduleItems : []).length}건
                       </div>
                     </td>
                     <td className="py-4 px-4 whitespace-nowrap">

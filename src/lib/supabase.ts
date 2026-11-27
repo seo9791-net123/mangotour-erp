@@ -1,8 +1,26 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-function cleanEnvValue(val: unknown): string {
+function cleanEnvValue(val: unknown, keyName?: string): string {
   if (typeof val !== 'string') return '';
-  return val.trim().replace(/^['"]|['"]$/g, '').trim();
+  let cleaned = val
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .replace(/^['"`<]+|['"`>]+$/g, '')
+    .trim();
+
+  if (keyName && cleaned.toUpperCase().startsWith(`${keyName.toUpperCase()}=`)) {
+    cleaned = cleaned.slice(keyName.length + 1).trim().replace(/^['"`]+|['"`]+$/g, '').trim();
+  }
+  return cleaned;
+}
+
+function normalizeSupabaseUrl(url: string): string {
+  if (!url) return '';
+  let normalized = url.replace(/^https?;\/\//i, 'https://').replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(normalized) && /\.supabase\.(co|in|net)$/i.test(normalized)) {
+    normalized = `https://${normalized}`;
+  }
+  return normalized;
 }
 
 function getSupabaseConfigDiagnostic(url: string, key: string): string {
@@ -41,14 +59,16 @@ function getSupabaseConfigDiagnostic(url: string, key: string): string {
       return 'VITE_SUPABASE_URL에 도메인(.supabase.co)이 누락되었습니다. (예: https://프로젝트ID.supabase.co)';
     }
   } catch {
-    return 'VITE_SUPABASE_URL 형식이 올바르지 않습니다. (예: https://프로젝트ID.supabase.co)';
+    return `VITE_SUPABASE_URL 형식이 올바르지 않습니다. (현재 인식값: "${url.slice(0, 28)}")`;
   }
 
   return '';
 }
 
-const rawUrl = cleanEnvValue(import.meta.env.VITE_SUPABASE_URL);
-const rawKey = cleanEnvValue(import.meta.env.VITE_SUPABASE_ANON_KEY);
+const rawUrl = normalizeSupabaseUrl(
+  cleanEnvValue(import.meta.env.VITE_SUPABASE_URL, 'VITE_SUPABASE_URL')
+);
+const rawKey = cleanEnvValue(import.meta.env.VITE_SUPABASE_ANON_KEY, 'VITE_SUPABASE_ANON_KEY');
 
 let client: SupabaseClient | null = null;
 let configError = getSupabaseConfigDiagnostic(rawUrl, rawKey);

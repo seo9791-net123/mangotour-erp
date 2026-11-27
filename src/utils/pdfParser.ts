@@ -47,7 +47,9 @@ export async function renderPdfToImages(file: File, maxPages = 6): Promise<Rende
 
   for (let i = 1; i <= pageCount; i++) {
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 1.8 });
+    const baseViewport = page.getViewport({ scale: 1 });
+    const targetScale = Math.min(1.6, 1240 / Math.max(baseViewport.width, 1));
+    const viewport = page.getViewport({ scale: targetScale });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     if (!context) {
@@ -62,7 +64,7 @@ export async function renderPdfToImages(file: File, maxPages = 6): Promise<Rende
       canvas,
     }).promise;
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
     pages.push({
       pageNumber: i,
       dataUrl,
@@ -88,12 +90,31 @@ export async function analyzePdfQuoteWithGemini(
     }),
   });
 
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload?.error || 'PDF 견적서 AI 분석에 실패했습니다.');
+  const rawText = await response.text();
+  let payload: { data?: ParsedQuoteResult; error?: string } | null = null;
+  try {
+    payload = rawText ? (JSON.parse(rawText) as { data?: ParsedQuoteResult; error?: string }) : null;
+  } catch {
+    payload = null;
   }
 
-  return payload.data as ParsedQuoteResult;
+  if (!response.ok) {
+    if (payload?.error) {
+      throw new Error(payload.error);
+    }
+    if (response.status === 413) {
+      throw new Error('PDF 이미지 용량이 서버 허용 한도를 초과했습니다. 페이지 수를 줄여 다시 시도해 주세요.');
+    }
+    throw new Error(
+      `PDF 분석 서버 응답 오류 (HTTP ${response.status}). 잠시 후 다시 시도해 주세요.`
+    );
+  }
+
+  if (!payload?.data) {
+    throw new Error('PDF 분석 결과를 해석할 수 없습니다. 잠시 후 다시 시도해 주세요.');
+  }
+
+  return payload.data;
 }
 
 export function generateUuid(): string {

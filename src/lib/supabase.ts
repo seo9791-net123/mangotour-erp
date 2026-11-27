@@ -17,6 +17,25 @@ function cleanEnvValue(val: unknown, keyName?: string): string {
 function normalizeSupabaseUrl(url: string): string {
   if (!url) return '';
   let normalized = url.replace(/^https?;\/\//i, 'https://').replace(/\/+$/, '');
+  const upper = normalized.toUpperCase();
+  const isPlaceholder =
+    upper.includes('YOUR_') ||
+    upper.includes('MY_') ||
+    upper.includes('PLACEHOLDER') ||
+    upper.includes('EXAMPLE');
+
+  if (!isPlaceholder) {
+    // Bare Supabase project ref ID (e.g. "pmadzvwquvguplghsona") -> "https://pmadzvwquvguplghsona.supabase.co"
+    if (/^[a-z0-9]{16,32}$/.test(normalized)) {
+      return `https://${normalized}.supabase.co`;
+    }
+    // Scheme present without domain suffix (e.g. "https://pmadzvwquvguplghsona")
+    const bareWithScheme = normalized.match(/^https?:\/\/([a-z0-9]{16,32})$/);
+    if (bareWithScheme) {
+      return `https://${bareWithScheme[1]}.supabase.co`;
+    }
+  }
+
   if (!/^https?:\/\//i.test(normalized) && /\.supabase\.(co|in|net)$/i.test(normalized)) {
     normalized = `https://${normalized}`;
   }

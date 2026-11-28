@@ -16,6 +16,7 @@ import {
   formatUsd,
   getCostItemCurrency,
   getCostItemOriginalAmount,
+  isBookingCancelled,
   recalculateCostItemsWithRates,
 } from '../utils/storage';
 
@@ -65,7 +66,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   const safeReservations = Array.isArray(reservations) ? reservations : [];
 
   const activeReservations = useMemo(
-    () => safeReservations.filter((r) => r && r.status !== '취소'),
+    () => safeReservations.filter((r) => r && !isBookingCancelled(r)),
     [safeReservations]
   );
 

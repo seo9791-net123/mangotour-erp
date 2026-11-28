@@ -1,14 +1,17 @@
 import React, { useMemo, useState } from 'react';
 import { FileSpreadsheet, Plus, Search, Trash2 } from 'lucide-react';
-import type { BookingStatus, ExcelSheetRow, Reservation } from '../types/erp';
+import { BOOKING_STATUSES, type BookingStatus, type ExcelSheetRow, type Reservation } from '../types/erp';
 import {
   calculateReservationFinance,
   exportCustomSheetToCsv,
   exportReservationsToCsv,
   formatKrw,
   formatUsd,
+  isBookingCancelled,
+  resolveEffectiveBookingStatus,
 } from '../utils/storage';
 import { generateUuid } from '../utils/pdfParser';
+import { CancelPenaltyModal } from './CancelPenaltyModal';
 
 interface ExcelSheetViewProps {
   reservations: Reservation[];
@@ -31,6 +34,7 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
 }) => {
   const [activeSheet, setActiveSheet] = useState<SheetTab>('master');
   const [searchQuery, setSearchQuery] = useState('');
+  const [cancelTarget, setCancelTarget] = useState<Reservation | null>(null);
 
   const safeReservations = Array.isArray(reservations) ? reservations : [];
   const safeExcelRows = Array.isArray(excelRows) ? excelRows : [];
@@ -54,7 +58,7 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
     let costUsd = 0;
     let profitUsd = 0;
     filteredReservations.forEach((r) => {
-      if (!r || r.status === '취소') return;
+      if (!r || isBookingCancelled(r)) return;
       const fin = calculateReservationFinance(r);
       revenueUsd += Number(r.totalPriceUsd) || 0;
       costUsd += fin.totalCostUsd;
@@ -99,7 +103,7 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
       startDate: dateStr,
       endDate: dateStr,
       managerName: '박지훈 팀장',
-      status: '상담중',
+      status: '견적대기',
       totalPriceUsd: 0,
       totalPriceKrw: 0,
       exchangeRate: 1400,
@@ -313,21 +317,22 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
                       </td>
                       <td className="p-0 border-r border-slate-200">
                         <select
-                          value={res.status}
-                          onChange={(e) =>
-                            onUpdateReservation(res.id, {
-                              status: e.target.value as BookingStatus,
-                            })
-                          }
+                          value={resolveEffectiveBookingStatus(res)}
+                          onChange={(e) => {
+                            const nextStatus = e.target.value as BookingStatus;
+                            if (nextStatus === '예약취소') {
+                              setCancelTarget(res);
+                              return;
+                            }
+                            onUpdateReservation(res.id, { status: nextStatus });
+                          }}
                           className="px-2 py-2 bg-transparent focus:bg-white focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#065F46] font-medium"
                         >
-                          {(['상담중', '예약확정', '진행중', '완료', '취소'] as BookingStatus[]).map(
-                            (st) => (
-                              <option key={st} value={st}>
-                                {st}
-                              </option>
-                            )
-                          )}
+                          {BOOKING_STATUSES.map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
                         </select>
                       </td>
                       <td className="p-0 border-r border-slate-200">
@@ -589,6 +594,21 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
             </table>
           </div>
         </div>
+      )}
+
+      {cancelTarget && (
+        <CancelPenaltyModal
+          reservation={cancelTarget}
+          onConfirm={(feeRevenueKrw, penaltyCostKrw) => {
+            onUpdateReservation(cancelTarget.id, {
+              status: '예약취소',
+              cancelFeeRevenueKrw: feeRevenueKrw,
+              cancelPenaltyCostKrw: penaltyCostKrw,
+            });
+            setCancelTarget(null);
+          }}
+          onCancel={() => setCancelTarget(null)}
+        />
       )}
     </div>
   );

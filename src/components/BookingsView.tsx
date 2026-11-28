@@ -9,12 +9,13 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import type {
-  BookingStatus,
-  MasterPrice,
-  ParsedQuoteResult,
-  Reservation,
-  UserRole,
+import {
+  BOOKING_STATUSES,
+  type BookingStatus,
+  type MasterPrice,
+  type ParsedQuoteResult,
+  type Reservation,
+  type UserRole,
 } from '../types/erp';
 import {
   analyzePdfQuoteWithGemini,
@@ -28,13 +29,19 @@ import {
   renderPdfToImages,
 } from '../utils/pdfParser';
 import { SAMPLE_PDF_QUOTE } from '../utils/sampleData';
-import { formatKrw, formatUsd } from '../utils/storage';
+import {
+  formatKrw,
+  formatUsd,
+  resolveEffectiveBookingStatus,
+} from '../utils/storage';
+import { CancelPenaltyModal } from './CancelPenaltyModal';
 
 interface BookingsViewProps {
   reservations: Reservation[];
   masterPrices: MasterPrice[];
   role: UserRole;
   onAddReservation: (reservation: Reservation) => void;
+  onUpdateReservation: (id: string, updates: Partial<Reservation>) => void;
   onOpenReservationDetail: (reservationId: string) => void;
 }
 
@@ -43,6 +50,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
   masterPrices,
   role,
   onAddReservation,
+  onUpdateReservation,
   onOpenReservationDetail,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -55,6 +63,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | BookingStatus>('ALL');
+  const [cancelTarget, setCancelTarget] = useState<Reservation | null>(null);
 
   const processQuoteFile = async (file: File) => {
     const lowerName = file.name.toLowerCase();
@@ -140,7 +149,8 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
   const filteredReservations = useMemo(() => {
     return safeReservations.filter((r) => {
       if (!r) return false;
-      if (statusFilter !== 'ALL' && r.status !== statusFilter) return false;
+      const effectiveStatus = resolveEffectiveBookingStatus(r);
+      if (statusFilter !== 'ALL' && effectiveStatus !== statusFilter) return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.trim().toLowerCase();
       return (
@@ -154,17 +164,25 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
 
   const statusColorClass = (status: BookingStatus) => {
     switch (status) {
+      case '견적대기':
+        return 'text-amber-800 bg-amber-50 border-amber-200';
       case '예약확정':
         return 'text-[#065F46] bg-emerald-50 border-emerald-200';
-      case '진행중':
-        return 'text-amber-800 bg-amber-50 border-amber-200';
-      case '완료':
-        return 'text-slate-700 bg-slate-100 border-slate-200';
-      case '취소':
-        return 'text-red-700 bg-red-50 border-red-200';
+      case '행사완료':
+        return 'text-sky-800 bg-sky-50 border-sky-200';
+      case '예약취소':
+        return 'text-slate-500 bg-slate-100 border-slate-300';
       default:
         return 'text-slate-600 bg-slate-50 border-slate-200';
     }
+  };
+
+  const handleStatusSelect = (res: Reservation, nextStatus: BookingStatus) => {
+    if (nextStatus === '예약취소') {
+      setCancelTarget(res);
+      return;
+    }
+    onUpdateReservation(res.id, { status: nextStatus });
   };
 
   return (
@@ -534,8 +552,8 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
               />
             </div>
 
-            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
-              {(['ALL', '예약확정', '진행중', '완료'] as const).map((st) => (
+            <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl">
+              {(['ALL', ...BOOKING_STATUSES] as const).map((st) => (
                 <button
                   key={st}
                   type="button"
@@ -575,77 +593,160 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
                   </td>
                 </tr>
               ) : (
-                filteredReservations.map((res) => (
-                  <tr
-                    key={res.id}
-                    className="hover:bg-slate-50/70 transition-colors"
-                  >
-                    <td className="py-4 px-6 whitespace-nowrap">
-                      <div className="font-mono text-xs font-medium text-slate-900">
-                        {res.startDate || '-'} ~ {(res.endDate || '').slice(5) || '-'}
-                      </div>
-                      <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                        {res.bookingCode}
-                      </div>
-                    </td>
-                    <td className="py-4 px-4 whitespace-nowrap">
-                      <div className="font-semibold text-slate-900">
-                        {res.customerName}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-0.5">
-                        총 {res.customerCount || 1}인 · 담당 {res.managerName || '-'}
-                      </div>
-                    </td>
-                    <td className="py-4 px-4 max-w-xs">
-                      <div className="font-medium text-slate-900 truncate">
-                        {res.productName}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-0.5 truncate">
-                        {res.destination || '-'} · 일정 {(Array.isArray(res.scheduleItems) ? res.scheduleItems : []).length}건
-                      </div>
-                    </td>
-                    <td className="py-4 px-4 whitespace-nowrap">
-                      <span
-                        className={`inline-block px-2.5 py-1 text-xs font-semibold rounded-lg border ${statusColorClass(
-                          res.status
-                        )}`}
-                      >
-                        {res.status}
-                      </span>
-                    </td>
-                    <td className="py-4 px-4 whitespace-nowrap text-right">
-                      {role === 'admin' ? (
-                        <div>
-                          <div className="font-mono font-semibold text-slate-900">
-                            {formatUsd(res.totalPriceUsd)}
-                          </div>
-                          <div className="font-mono text-xs text-slate-400 mt-0.5">
-                            {formatKrw(res.totalPriceKrw)}
-                          </div>
+                filteredReservations.map((res) => {
+                  const effectiveStatus = resolveEffectiveBookingStatus(res);
+                  const isCancelled = effectiveStatus === '예약취소';
+                  const canChangeStatus = role === 'admin' || role === 'staff';
+                  const cancelFee = Number(res.cancelFeeRevenueKrw) || 0;
+                  const cancelPenalty = Number(res.cancelPenaltyCostKrw) || 0;
+
+                  return (
+                    <tr
+                      key={res.id}
+                      className={`transition-colors ${
+                        isCancelled ? 'bg-slate-50/80 text-slate-400' : 'hover:bg-slate-50/70'
+                      }`}
+                    >
+                      <td className="py-4 px-6 whitespace-nowrap">
+                        <div
+                          className={`font-mono text-xs font-medium ${
+                            isCancelled ? 'text-slate-400 line-through' : 'text-slate-900'
+                          }`}
+                        >
+                          {res.startDate || '-'} ~ {(res.endDate || '').slice(5) || '-'}
                         </div>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-slate-400">
-                          <Lock className="w-3.5 h-3.5" />
-                          권한 제한
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-4 px-6 whitespace-nowrap text-right">
-                      <button
-                        type="button"
-                        onClick={() => onOpenReservationDetail(res.id)}
-                        className="px-3 py-1.5 text-xs font-semibold text-[#065F46] bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
-                      >
-                        상세보기 / 일정수정
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                        <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                          {res.bookingCode}
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 whitespace-nowrap">
+                        <div
+                          className={`font-semibold ${
+                            isCancelled ? 'text-slate-400 line-through' : 'text-slate-900'
+                          }`}
+                        >
+                          {res.customerName}
+                        </div>
+                        <div className="text-xs text-slate-400 mt-0.5">
+                          총 {res.customerCount || 1}인 · 담당 {res.managerName || '-'}
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 max-w-xs">
+                        <div
+                          className={`font-medium truncate ${
+                            isCancelled ? 'text-slate-400 line-through' : 'text-slate-900'
+                          }`}
+                        >
+                          {res.productName}
+                        </div>
+                        <div className="text-xs text-slate-400 mt-0.5 truncate">
+                          {res.destination || '-'} · 일정 {(Array.isArray(res.scheduleItems) ? res.scheduleItems : []).length}건
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 whitespace-nowrap">
+                        <div className="flex flex-col items-start gap-1">
+                          {canChangeStatus ? (
+                            <select
+                              value={effectiveStatus}
+                              aria-label={`${res.customerName} 예약 상태`}
+                              onChange={(e) =>
+                                handleStatusSelect(res, e.target.value as BookingStatus)
+                              }
+                              className={`px-2.5 py-1 text-xs font-semibold rounded-lg border focus:outline-none cursor-pointer ${statusColorClass(
+                                effectiveStatus
+                              )}`}
+                            >
+                              {BOOKING_STATUSES.map((st) => (
+                                <option key={st} value={st} className="bg-white text-slate-900">
+                                  {st}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span
+                              className={`inline-block px-2.5 py-1 text-xs font-semibold rounded-lg border ${statusColorClass(
+                                effectiveStatus
+                              )}`}
+                            >
+                              {effectiveStatus}
+                            </span>
+                          )}
+                          {isCancelled && role === 'admin' && (
+                            <button
+                              type="button"
+                              onClick={() => setCancelTarget(res)}
+                              className="text-[10px] font-mono text-slate-500 hover:text-[#065F46] underline cursor-pointer"
+                            >
+                              위약금 수정 ({formatKrw(cancelFee - cancelPenalty)})
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 whitespace-nowrap text-right">
+                        {role === 'admin' ? (
+                          isCancelled ? (
+                            <div>
+                              <div className="font-mono text-xs text-slate-400 line-through">
+                                {formatKrw(res.totalPriceKrw)}
+                              </div>
+                              <div className="font-mono text-[11px] font-semibold text-slate-600 mt-0.5">
+                                수수료 {formatKrw(cancelFee)} / 위약 {formatKrw(cancelPenalty)}
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <div className="font-mono font-semibold text-slate-900">
+                                {formatUsd(res.totalPriceUsd)}
+                              </div>
+                              <div className="font-mono text-xs text-slate-400 mt-0.5">
+                                {formatKrw(res.totalPriceKrw)}
+                              </div>
+                            </div>
+                          )
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                            <Lock className="w-3.5 h-3.5" />
+                            권한 제한
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-4 px-6 whitespace-nowrap text-right">
+                        <button
+                          type="button"
+                          onClick={() => onOpenReservationDetail(res.id)}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap cursor-pointer ${
+                            isCancelled
+                              ? 'text-slate-500 bg-white border-slate-200 hover:bg-slate-100'
+                              : 'text-[#065F46] bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
+                          }`}
+                        >
+                          상세보기 / 일정수정
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       </section>
+
+      {cancelTarget && (
+        <CancelPenaltyModal
+          reservation={cancelTarget}
+          hideOriginalPrice={role !== 'admin'}
+          onConfirm={(feeRevenueKrw, penaltyCostKrw) => {
+            onUpdateReservation(cancelTarget.id, {
+              status: '예약취소',
+              cancelFeeRevenueKrw: feeRevenueKrw,
+              cancelPenaltyCostKrw: penaltyCostKrw,
+            });
+            setCancelTarget(null);
+          }}
+          onCancel={() => setCancelTarget(null)}
+        />
+      )}
     </div>
   );
 };

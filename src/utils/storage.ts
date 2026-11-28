@@ -1,5 +1,6 @@
 import type {
   AuthUser,
+  BookingStatus,
   CostCurrency,
   CostItem,
   ExcelSheetRow,
@@ -13,6 +14,45 @@ import { INITIAL_RESERVATIONS } from './sampleData';
 export const DEFAULT_KRW_RATE = 1400;
 export const DEFAULT_VND_RATE = 25400;
 
+export function getLocalTodayIso(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function normalizeBookingStatus(rawStatus: unknown): BookingStatus {
+  const s = String(rawStatus || '').trim();
+  if (s === '견적대기' || s === '상담중') return '견적대기';
+  if (s === '행사완료' || s === '완료') return '행사완료';
+  if (s === '예약취소' || s === '취소') return '예약취소';
+  if (s === '예약확정' || s === '진행중') return '예약확정';
+  return '예약확정';
+}
+
+export function resolveEffectiveBookingStatus(
+  res: { status?: unknown; endDate?: string } | null | undefined,
+  todayIso: string = getLocalTodayIso()
+): BookingStatus {
+  const normalized = normalizeBookingStatus(res?.status);
+  if (
+    normalized === '예약확정' &&
+    typeof res?.endDate === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(res.endDate) &&
+    res.endDate < todayIso
+  ) {
+    return '행사완료';
+  }
+  return normalized;
+}
+
+export function isBookingCancelled(
+  res: { status?: unknown; endDate?: string } | null | undefined
+): boolean {
+  return normalizeBookingStatus(res?.status) === '예약취소';
+}
+
 const RESERVATIONS_KEY = 'mango_tour_erp_reservations_v1';
 const AUTH_KEY = 'mango_tour_erp_auth_v1';
 const STAFF_ACCOUNTS_KEY = 'mango_tour_erp_staff_v1';
@@ -25,7 +65,10 @@ export const DEFAULT_STAFF_ACCOUNTS: StaffAccount[] = [
     username: 'staff',
     password: '1234',
     displayName: '오퍼레이터',
-    position: '일정 오퍼레이터',
+    fullName: '오퍼레이터',
+    role: 'staff',
+    isActive: true,
+    position: '일반 사무',
     phone: '010-2345-6789',
     createdAt: '2026-11-01T00:00:00.000Z',
   },
@@ -108,7 +151,28 @@ export function loadStaffAccounts(): StaffAccount[] {
       return DEFAULT_STAFF_ACCOUNTS;
     }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : DEFAULT_STAFF_ACCOUNTS;
+    if (!Array.isArray(parsed)) return DEFAULT_STAFF_ACCOUNTS;
+    return parsed.map((item) => {
+      const roleRaw = String((item as Partial<StaffAccount>)?.role || '').toLowerCase();
+      const role: UserRole =
+        roleRaw === 'admin' || roleRaw === 'staff' || roleRaw === 'guide' || roleRaw === 'accountant'
+          ? roleRaw
+          : 'staff';
+      const displayName = String(
+        (item as Partial<StaffAccount>)?.fullName ||
+          (item as Partial<StaffAccount>)?.displayName ||
+          (item as Partial<StaffAccount>)?.username ||
+          '직원'
+      );
+      return {
+        ...(item as StaffAccount),
+        displayName,
+        fullName: displayName,
+        role,
+        isActive: (item as Partial<StaffAccount>)?.isActive !== false,
+        position: String((item as Partial<StaffAccount>)?.position || ''),
+      };
+    });
   } catch {
     return DEFAULT_STAFF_ACCOUNTS;
   }
@@ -140,7 +204,21 @@ export function loadAuthUser(): AuthUser | null {
   try {
     const raw = localStorage.getItem(AUTH_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as AuthUser;
+    const parsed = JSON.parse(raw) as Partial<AuthUser>;
+    if (!parsed || !parsed.username) return null;
+    const roleRaw = String(parsed.role || '').toLowerCase();
+    const role: UserRole =
+      roleRaw === 'admin' || roleRaw === 'staff' || roleRaw === 'guide' || roleRaw === 'accountant'
+        ? roleRaw
+        : 'staff';
+    const fullName = String(parsed.fullName || parsed.displayName || parsed.username);
+    return {
+      id: parsed.id,
+      username: String(parsed.username),
+      role,
+      displayName: fullName,
+      fullName,
+    };
   } catch {
     return null;
   }
@@ -313,10 +391,11 @@ export function exportReservationsToCsv(reservations: Reservation[], role: UserR
 
   const rows = safeReservations.map((r) => {
     const scheduleCount = Array.isArray(r?.scheduleItems) ? r.scheduleItems.length : 0;
+    const effectiveStatus = resolveEffectiveBookingStatus(r);
     if (!isAdmin) {
       return [
         r.bookingCode || '',
-        r.status || '',
+        effectiveStatus,
         r.customerName || '',
         r.customerCount || 0,
         r.destination || '',
@@ -330,7 +409,7 @@ export function exportReservationsToCsv(reservations: Reservation[], role: UserR
     const fin = calculateReservationFinance(r);
     return [
       r.bookingCode || '',
-      r.status || '',
+      effectiveStatus,
       r.customerName || '',
       r.customerCount || 0,
       r.destination || '',

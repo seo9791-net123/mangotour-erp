@@ -1,7 +1,6 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
   COST_CATEGORIES,
-  type BookingStatus,
   type CostCategory,
   type CostCurrency,
   type CostItem,
@@ -10,6 +9,7 @@ import {
   type ScheduleItem,
   type ScheduleType,
 } from '../types/erp';
+import { resolveEffectiveBookingStatus } from '../utils/storage';
 
 export interface SupabaseBookingRow {
   id: string;
@@ -33,6 +33,8 @@ export interface SupabaseBookingRow {
   exclusions?: string | null;
   status?: string | null;
   exchange_rate_vnd?: number | null;
+  cancel_fee_revenue_krw?: number | null;
+  cancel_penalty_cost_krw?: number | null;
 }
 
 interface IncludedMetaPayload {
@@ -40,6 +42,8 @@ interface IncludedMetaPayload {
   rawCustomerText?: string;
   exchangeRate?: number;
   vndExchangeRate?: number;
+  cancelFeeRevenueKrw?: number;
+  cancelPenaltyCostKrw?: number;
   depositAmountUsd?: number;
   balanceAmountUsd?: number;
   revenueItems?: RevenueItem[];
@@ -221,7 +225,11 @@ export function mapBookingRowToReservation(row: SupabaseBookingRow): Reservation
     endDate,
     duration: row?.duration || computeDurationText(startDate, endDate),
     managerName: row?.manager || '담당자 미지정',
-    status: (row?.status as BookingStatus) || '예약확정',
+    status: resolveEffectiveBookingStatus({ status: row?.status, endDate }),
+    cancelFeeRevenueKrw:
+      Number(row?.cancel_fee_revenue_krw ?? meta?.cancelFeeRevenueKrw ?? 0) || 0,
+    cancelPenaltyCostKrw:
+      Number(row?.cancel_penalty_cost_krw ?? meta?.cancelPenaltyCostKrw ?? 0) || 0,
     totalPriceUsd: totalUsd,
     totalPriceKrw: totalKrw || Math.round(totalUsd * exchangeRate),
     exchangeRate,
@@ -258,11 +266,16 @@ export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow
       .map((c) => c.title)
       .join(', ');
 
+  const cancelFeeRevenueKrw = Math.max(0, Math.round(Number(res.cancelFeeRevenueKrw) || 0));
+  const cancelPenaltyCostKrw = Math.max(0, Math.round(Number(res.cancelPenaltyCostKrw) || 0));
+
   const includedMeta: IncludedMetaPayload = {
     bookingCode: res.bookingCode,
     rawCustomerText: res.rawCustomerText,
     exchangeRate: res.exchangeRate,
     vndExchangeRate: res.vndExchangeRate || 25400,
+    cancelFeeRevenueKrw,
+    cancelPenaltyCostKrw,
     depositAmountUsd: res.depositAmountUsd,
     balanceAmountUsd: res.balanceAmountUsd,
     revenueItems: safeRevenueItems,
@@ -303,6 +316,8 @@ export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow
     exclusions: res.exclusions || res.memo || '',
     status: res.status,
     exchange_rate_vnd: Number(res.vndExchangeRate) || 25400,
+    cancel_fee_revenue_krw: cancelFeeRevenueKrw,
+    cancel_penalty_cost_krw: cancelPenaltyCostKrw,
   };
 }
 
@@ -338,14 +353,26 @@ export async function fetchBookings(): Promise<Reservation[]> {
   return (rows as SupabaseBookingRow[]).map(mapBookingRowToReservation);
 }
 
-function isMissingVndColumnError(error: { code?: string; message?: string } | null): boolean {
+function isMissingOptionalColumnError(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false;
   const code = error.code || '';
   const msg = (error.message || '').toLowerCase();
   return (
     (code === 'PGRST204' || code === '42703' || msg.includes('schema cache') || msg.includes('column')) &&
-    msg.includes('exchange_rate_vnd')
+    (msg.includes('exchange_rate_vnd') ||
+      msg.includes('cancel_fee_revenue_krw') ||
+      msg.includes('cancel_penalty_cost_krw'))
   );
+}
+
+function stripOptionalBookingColumns<T extends Partial<SupabaseBookingRow>>(row: T) {
+  const {
+    exchange_rate_vnd: _vnd,
+    cancel_fee_revenue_krw: _fee,
+    cancel_penalty_cost_krw: _penalty,
+    ...rest
+  } = row;
+  return rest;
 }
 
 export async function createBooking(reservation: Reservation): Promise<Reservation> {
@@ -357,8 +384,8 @@ export async function createBooking(reservation: Reservation): Promise<Reservati
     .select('*')
     .single();
 
-  if (error && isMissingVndColumnError(error)) {
-    const { exchange_rate_vnd: _omit, ...fallbackRow } = row;
+  if (error && isMissingOptionalColumnError(error)) {
+    const fallbackRow = stripOptionalBookingColumns(row);
     const retry = await client
       .from('bookings')
       .insert(fallbackRow)
@@ -388,8 +415,8 @@ export async function updateBooking(reservation: Reservation): Promise<Reservati
     .select('*')
     .single();
 
-  if (error && isMissingVndColumnError(error)) {
-    const { exchange_rate_vnd: _omit, ...fallbackPayload } = updatePayload;
+  if (error && isMissingOptionalColumnError(error)) {
+    const fallbackPayload = stripOptionalBookingColumns(updatePayload);
     const retry = await client
       .from('bookings')
       .update(fallbackPayload)
@@ -426,8 +453,8 @@ export async function upsertBookingsBatch(reservations: Reservation[]): Promise<
     .upsert(rows, { onConflict: 'id' })
     .select('*');
 
-  if (error && isMissingVndColumnError(error)) {
-    const fallbackRows = rows.map(({ exchange_rate_vnd: _omit, ...rest }) => rest);
+  if (error && isMissingOptionalColumnError(error)) {
+    const fallbackRows = rows.map(stripOptionalBookingColumns);
     const retry = await client
       .from('bookings')
       .upsert(fallbackRows, { onConflict: 'id' })

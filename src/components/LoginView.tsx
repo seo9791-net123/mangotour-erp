@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, ShieldCheck, User } from 'lucide-react';
+import { ArrowRight, Loader2, Lock, ShieldCheck, User } from 'lucide-react';
+import { authenticateAppUser } from '../services/appUsersService';
 import type { AuthUser, StaffAccount } from '../types/erp';
 
 interface LoginViewProps {
@@ -11,44 +12,68 @@ export const LoginView: React.FC<LoginViewProps> = ({ staffAccounts, onLogin }) 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const safeStaffAccounts = Array.isArray(staffAccounts) ? staffAccounts : [];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setError('');
 
     const trimmedId = username.trim();
+    if (!trimmedId || !password) {
+      setError('아이디와 비밀번호를 모두 입력해 주세요.');
+      return;
+    }
+
+    // 1. 기존 관리자(admin) 계정 로그인 유지 (자동 role = 'admin')
     if (trimmedId === 'admin' && password === 'Rlathdud1~') {
       onLogin({
         username: 'admin',
         role: 'admin',
         displayName: '총괄 관리자',
+        fullName: '총괄 관리자',
       });
       return;
     }
 
-    const matchedStaff = safeStaffAccounts.find(
-      (acc) => acc.username === trimmedId && acc.password === password
-    );
-    if (matchedStaff) {
-      onLogin({
-        username: matchedStaff.username,
-        role: 'staff',
-        displayName: matchedStaff.displayName,
-      });
-      return;
+    // 2. Supabase app_users 테이블 (및 로컬 폴백) 통합 인증 + is_active 확인
+    setSubmitting(true);
+    try {
+      const result = await authenticateAppUser(trimmedId, password, safeStaffAccounts);
+      if (result.status === 'inactive') {
+        setError('비활성화(퇴사)된 계정입니다. 관리자에게 문의해 주세요.');
+        return;
+      }
+      if (result.status === 'success') {
+        const fullName = result.user.fullName || result.user.displayName || result.user.username;
+        onLogin({
+          id: result.user.id,
+          username: result.user.username,
+          role: result.user.role,
+          displayName: fullName,
+          fullName,
+        });
+        return;
+      }
+      setError('아이디 또는 비밀번호가 올바르지 않습니다.');
+    } catch {
+      setError('로그인 확인 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setSubmitting(false);
     }
-
-    setError('아이디 또는 비밀번호가 올바르지 않습니다.');
   };
 
   const handleQuickStaffLogin = () => {
-    const demoStaff = safeStaffAccounts[0];
+    const demoStaff = safeStaffAccounts.find((acc) => acc.isActive !== false && acc.role === 'staff');
+    const name = demoStaff?.fullName || demoStaff?.displayName || '오퍼레이터';
     onLogin({
+      id: demoStaff?.id,
       username: demoStaff?.username || 'staff',
       role: 'staff',
-      displayName: demoStaff?.displayName || '오퍼레이터',
+      displayName: name,
+      fullName: name,
     });
   };
 
@@ -113,10 +138,20 @@ export const LoginView: React.FC<LoginViewProps> = ({ staffAccounts, onLogin }) 
 
             <button
               type="submit"
-              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[#065F46] hover:bg-[#054e3a] text-white text-sm font-semibold transition-colors cursor-pointer"
+              disabled={submitting}
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[#065F46] hover:bg-[#054e3a] text-white text-sm font-semibold transition-colors cursor-pointer disabled:opacity-60"
             >
-              <span>로그인</span>
-              <ArrowRight className="w-4 h-4" />
+              {submitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>계정 확인 중...</span>
+                </>
+              ) : (
+                <>
+                  <span>로그인</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </form>
 
@@ -127,11 +162,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ staffAccounts, onLogin }) 
               className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 text-sm font-semibold transition-colors cursor-pointer"
             >
               <ShieldCheck className="w-4 h-4 text-[#D97706]" />
-              <span>직원 계정 빠른 체험 (staff)</span>
+              <span>직원 계정 빠른 체험 (일반 사무)</span>
             </button>
             <p className="mt-3 text-xs text-slate-500 text-center leading-relaxed">
-              직원 계정은 자금/정산 메뉴 및 금액 정보가 제한되며<br />
-              월간 스케줄·티오프 시간·차량/가이드 배정만 관리할 수 있습니다.
+              관리자(admin) 외 직원 계정은 부여된 등급(일반 사무·가이드·세무)에 따라<br />
+              허용된 메뉴와 기능만 안전하게 표시됩니다.
             </p>
           </div>
         </div>

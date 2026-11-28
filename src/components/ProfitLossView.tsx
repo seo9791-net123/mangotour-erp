@@ -31,6 +31,7 @@ import {
   formatUsd,
   getCostItemCurrency,
   getCostItemOriginalAmount,
+  isBookingCancelled,
 } from '../utils/storage';
 
 interface ProfitLossViewProps {
@@ -125,13 +126,13 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
   const selectedYearMonth = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
 
   // 1. Monthly P&L Data (aggregated by start_date YYYY-MM)
+  // 취소된 투어도 취소수수료/위약금 정산 내역 확인 및 월 손익 반영을 위해 포함 (단, 원 견적·예정 원가는 제외)
   const monthlyTours = useMemo(
     () =>
       safeReservations
         .filter(
           (r) =>
             r &&
-            r.status !== '취소' &&
             typeof r.startDate === 'string' &&
             r.startDate.startsWith(selectedYearMonth)
         )
@@ -160,6 +161,18 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
       const krwRate = Number(res.exchangeRate) > 0 ? Number(res.exchangeRate) : DEFAULT_KRW_RATE;
       const vndRate =
         Number(res.vndExchangeRate) > 0 ? Number(res.vndExchangeRate) : DEFAULT_VND_RATE;
+
+      // 예약취소 건: 원래 total_krw와 cost_items(미수금/미지급 포함) 완전 제외, 취소 수수료 매출 & 위약금 원가만 합산
+      if (isBookingCancelled(res)) {
+        const cancelFeeKrw = Math.max(0, Number(res.cancelFeeRevenueKrw) || 0);
+        const penaltyCostKrw = Math.max(0, Number(res.cancelPenaltyCostKrw) || 0);
+        totalRevenueKrw += cancelFeeKrw;
+        totalRevenueUsd += Number((cancelFeeKrw / krwRate).toFixed(2));
+        totalCostKrw += penaltyCostKrw;
+        totalCostUsd += Number((penaltyCostKrw / krwRate).toFixed(2));
+        return;
+      }
+
       const revUsd = Number(res.totalPriceUsd) || 0;
       const revKrw = Number(res.totalPriceKrw) || Math.round(revUsd * krwRate);
       totalRevenueUsd += revUsd;
@@ -262,7 +275,7 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
     }));
 
     safeReservations.forEach((res) => {
-      if (!res || res.status === '취소' || typeof res.startDate !== 'string') return;
+      if (!res || typeof res.startDate !== 'string') return;
       const match = /^(\d{4})-(\d{2})-\d{2}$/.exec(res.startDate);
       if (!match) return;
       const y = Number(match[1]);
@@ -273,6 +286,18 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
       const krwRate = Number(res.exchangeRate) > 0 ? Number(res.exchangeRate) : DEFAULT_KRW_RATE;
       const vndRate =
         Number(res.vndExchangeRate) > 0 ? Number(res.vndExchangeRate) : DEFAULT_VND_RATE;
+
+      // 예약취소 건: 원래 total_krw & cost_items 완전 제외, 취소 수수료 매출 & 위약금 원가만 합산
+      if (isBookingCancelled(res)) {
+        const cancelFeeKrw = Math.max(0, Number(res.cancelFeeRevenueKrw) || 0);
+        const penaltyCostKrw = Math.max(0, Number(res.cancelPenaltyCostKrw) || 0);
+        bucket.revenueKrw += cancelFeeKrw;
+        bucket.revenueUsd += Number((cancelFeeKrw / krwRate).toFixed(2));
+        bucket.totalCostKrw += penaltyCostKrw;
+        bucket.otherCostKrw += penaltyCostKrw;
+        return;
+      }
+
       const revUsd = Number(res.totalPriceUsd) || 0;
       const revKrw = Number(res.totalPriceKrw) || Math.round(revUsd * krwRate);
 
@@ -463,7 +488,7 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
         annual: totals.massageOptionKrw,
       },
       {
-        label: '  - 기타',
+        label: '  - 기타(위약금 포함)',
         values: buckets.map((b) => b.otherCostKrw),
         annual: totals.otherCostKrw,
       },
@@ -726,10 +751,68 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {monthlyTours.map((res) => {
-                      const fin = calculateReservationFinance(res);
-                      const rec = calculateReservationReceivable(res);
+                      const cancelled = isBookingCancelled(res);
                       const krwRate =
                         Number(res.exchangeRate) > 0 ? Number(res.exchangeRate) : DEFAULT_KRW_RATE;
+
+                      if (cancelled) {
+                        const cancelFee = Math.max(0, Number(res.cancelFeeRevenueKrw) || 0);
+                        const penaltyCost = Math.max(0, Number(res.cancelPenaltyCostKrw) || 0);
+                        const cancelProfit = cancelFee - penaltyCost;
+                        const cancelMargin = cancelFee > 0 ? (cancelProfit / cancelFee) * 100 : 0;
+
+                        return (
+                          <tr
+                            key={res.id}
+                            onClick={() => onOpenReservationDetail(res.id)}
+                            className="bg-slate-50/80 hover:bg-slate-100/70 transition-colors cursor-pointer"
+                          >
+                            <td className="py-3.5 px-4 sm:px-6 max-w-xs">
+                              <div className="flex items-center gap-1.5 font-bold text-slate-400 line-through">
+                                <span>
+                                  {res.customerName} ({res.customerCount}인)
+                                </span>
+                                <ExternalLink className="w-3 h-3 text-slate-300 shrink-0" />
+                              </div>
+                              <div className="text-[11px] text-slate-400 truncate mt-0.5 line-through">
+                                {res.productName}
+                              </div>
+                            </td>
+                            <td className="py-3.5 px-4 font-mono text-slate-400 whitespace-nowrap">
+                              <div className="line-through">
+                                {res.startDate} ~ {(res.endDate || '').slice(5) || '-'}
+                              </div>
+                              <div className="text-[11px] text-slate-400">{res.bookingCode}</div>
+                            </td>
+                            <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-700 whitespace-nowrap">
+                              <div>{formatKrw(cancelFee)}</div>
+                              <div className="text-[10px] text-slate-400">취소수수료</div>
+                            </td>
+                            <td className="py-3.5 px-4 text-right font-mono text-slate-600 whitespace-nowrap">
+                              <div>{formatKrw(penaltyCost)}</div>
+                              <div className="text-[10px] text-slate-400">위약금 원가</div>
+                            </td>
+                            <td
+                              className={`py-3.5 px-4 text-right font-mono font-bold whitespace-nowrap ${
+                                cancelProfit >= 0 ? 'text-[#065F46]' : 'text-red-600'
+                              }`}
+                            >
+                              {formatKrw(cancelProfit)}
+                            </td>
+                            <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-500 whitespace-nowrap">
+                              {cancelFee > 0 ? `${cancelMargin.toFixed(1)}%` : '-'}
+                            </td>
+                            <td className="py-3.5 px-4 sm:px-6 text-right whitespace-nowrap">
+                              <span className="inline-block px-2 py-0.5 text-[11px] font-semibold border rounded-md text-slate-500 bg-slate-100 border-slate-300">
+                                예약취소
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      const fin = calculateReservationFinance(res);
+                      const rec = calculateReservationReceivable(res);
                       const revKrw =
                         Number(res.totalPriceKrw) ||
                         Math.round((Number(res.totalPriceUsd) || 0) * krwRate);
@@ -1312,7 +1395,7 @@ export const ProfitLossView: React.FC<ProfitLossViewProps> = ({
                       { key: 'guideKrw', label: '└ 가이드' },
                       { key: 'mealKrw', label: '└ 식사' },
                       { key: 'massageOptionKrw', label: '└ 마사지/옵션' },
-                      { key: 'otherCostKrw', label: '└ 기타' },
+                      { key: 'otherCostKrw', label: '└ 기타 (위약금 포함)' },
                     ] as const
                   ).map((costRow) => (
                     <tr key={costRow.key} className="bg-white hover:bg-slate-50/50 text-slate-500">

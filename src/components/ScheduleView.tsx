@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Clock, Flag, MapPin, X } from 'lucide-react';
 import type { GolfBookingStatus, Reservation, ScheduleItem, UserRole } from '../types/erp';
-import { calculateReservationFinance } from '../utils/storage';
+import { calculateReservationFinance, isBookingCancelled } from '../utils/storage';
 import { useBodyScrollLock } from '../utils/useBodyScrollLock';
 
 interface ScheduleViewProps {
@@ -77,7 +77,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const entriesByDate = useMemo(() => {
     const map = new Map<string, CalendarEntry[]>();
     safeReservations.forEach((res) => {
-      if (!res || res.status === '취소') return;
+      if (!res || isBookingCancelled(res)) return;
       const items = Array.isArray(res.scheduleItems) ? res.scheduleItems : [];
       items.forEach((sch) => {
         if (!sch || !sch.date) return;
@@ -97,7 +97,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   // Top 3 KPI stats
   const kpis = useMemo(() => {
     const activeToursThisMonth = safeReservations.filter((r) => {
-      if (!r || r.status === '취소') return false;
+      if (!r || isBookingCancelled(r)) return false;
       const items = Array.isArray(r.scheduleItems) ? r.scheduleItems : [];
       return (
         (r.startDate || '').startsWith(monthPrefix) ||
@@ -108,7 +108,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
     let pendingGolfCount = 0;
     safeReservations.forEach((r) => {
-      if (!r || r.status === '취소') return;
+      if (!r || isBookingCancelled(r)) return;
       const items = Array.isArray(r.scheduleItems) ? r.scheduleItems : [];
       items.forEach((s) => {
         if (s && s.type === 'GOLF' && (s.golfBookingStatus || '대기') === '대기') {
@@ -118,7 +118,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     });
 
     const unpaidCount = safeReservations.filter((r) => {
-      if (!r || r.status === '취소') return false;
+      if (!r || isBookingCancelled(r)) return false;
       return calculateReservationFinance(r).isUnpaid;
     }).length;
 
@@ -133,7 +133,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     if (!selectedDay) return [];
     const list: CalendarEntry[] = [];
     safeReservations.forEach((res) => {
-      if (!res || res.status === '취소') return;
+      if (!res || isBookingCancelled(res)) return;
       const items = Array.isArray(res.scheduleItems) ? res.scheduleItems : [];
       items.forEach((sch) => {
         if (sch && sch.date === selectedDay) {

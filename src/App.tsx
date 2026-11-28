@@ -29,6 +29,13 @@ import { ScheduleView } from './components/ScheduleView';
 import { StaffManageView } from './components/StaffManageView';
 import { isSupabaseConfigured, supabaseConfigError } from './lib/supabase';
 import {
+  createAppUser,
+  deleteAppUser,
+  fetchAppUsers,
+  updateAppUser,
+  USER_ROLE_META,
+} from './services/appUsersService';
+import {
   createBooking,
   deleteBooking,
   fetchBookings,
@@ -58,6 +65,7 @@ import type {
   Reservation,
   ScheduleItem,
   StaffAccount,
+  UserRole,
 } from './types/erp';
 import {
   exportReservationsToCsv,
@@ -82,6 +90,20 @@ type MenuTab =
   | 'excel'
   | 'staff';
 
+const ROLE_ALLOWED_TABS: Record<UserRole, MenuTab[]> = {
+  admin: ['schedule', 'bookings', 'daily-expenses', 'finance', 'pnl', 'master-prices', 'excel', 'staff'],
+  staff: ['bookings', 'master-prices', 'daily-expenses'],
+  guide: ['daily-expenses'],
+  accountant: ['pnl', 'daily-expenses'],
+};
+
+const ROLE_DEFAULT_TAB: Record<UserRole, MenuTab> = {
+  admin: 'schedule',
+  staff: 'bookings',
+  guide: 'daily-expenses',
+  accountant: 'pnl',
+};
+
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(() => loadAuthUser());
   const [reservations, setReservations] = useState<Reservation[]>([]);
@@ -90,10 +112,14 @@ export default function App() {
   const [masterPrices, setMasterPrices] = useState<MasterPrice[]>(() => loadLocalMasterPrices());
   const [masterPricesWarning, setMasterPricesWarning] = useState<string>('');
   const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>(() => loadStaffAccounts());
+  const [staffAccountsWarning, setStaffAccountsWarning] = useState<string>('');
   const [excelRows, setExcelRows] = useState<ExcelSheetRow[]>(() => loadExcelSheetRows());
   const [fixedCosts, setFixedCosts] = useState<MonthlyFixedCost[]>(() => loadMonthlyFixedCosts());
   const [fixedCostsWarning, setFixedCostsWarning] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<MenuTab>('schedule');
+  const [activeTab, setActiveTab] = useState<MenuTab>(() => {
+    const initialUser = loadAuthUser();
+    return initialUser ? ROLE_DEFAULT_TAB[initialUser.role] : 'schedule';
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [detailReservationId, setDetailReservationId] = useState<string | null>(null);
   const [backupModalOpen, setBackupModalOpen] = useState(false);
@@ -136,13 +162,14 @@ export default function App() {
       setLoadingBookings(true);
       setSupabaseError('');
       try {
-        const [list, priceRes, fixedRes] = await Promise.all([
+        const [list, priceRes, fixedRes, usersRes] = await Promise.all([
           fetchBookings(),
           fetchMasterPrices().catch(() => ({ items: loadLocalMasterPrices(), warning: undefined })),
           fetchMonthlyFixedExpenses().catch(() => ({
             items: loadMonthlyFixedCosts(),
             warning: undefined,
           })),
+          fetchAppUsers().catch(() => ({ items: loadStaffAccounts(), warning: undefined })),
         ]);
         if (!cancelled) {
           setReservations(Array.isArray(list) ? list : []);
@@ -150,6 +177,10 @@ export default function App() {
           setMasterPricesWarning(priceRes.warning || '');
           setFixedCosts(Array.isArray(fixedRes.items) ? fixedRes.items : []);
           setFixedCostsWarning(fixedRes.warning || '');
+          if (Array.isArray(usersRes.items) && (usersRes.items.length > 0 || !usersRes.warning)) {
+            setStaffAccounts(usersRes.items);
+          }
+          setStaffAccountsWarning(usersRes.warning || '');
         }
       } catch (err: unknown) {
         if (!cancelled) {
@@ -212,16 +243,10 @@ export default function App() {
   }, [fixedCosts]);
 
   useEffect(() => {
-    if (
-      user?.role === 'staff' &&
-      (activeTab === 'daily-expenses' ||
-        activeTab === 'finance' ||
-        activeTab === 'pnl' ||
-        activeTab === 'master-prices' ||
-        activeTab === 'excel' ||
-        activeTab === 'staff')
-    ) {
-      setActiveTab('schedule');
+    if (!user) return;
+    const allowed = ROLE_ALLOWED_TABS[user.role] || ROLE_ALLOWED_TABS.staff;
+    if (!allowed.includes(activeTab)) {
+      setActiveTab(ROLE_DEFAULT_TAB[user.role] || 'bookings');
     }
   }, [user, activeTab]);
 
@@ -252,7 +277,8 @@ export default function App() {
   const handleLogin = (authUser: AuthUser) => {
     setUser(authUser);
     saveAuthUser(authUser);
-    setActiveTab('schedule');
+    setDetailReservationId(null);
+    setActiveTab(ROLE_DEFAULT_TAB[authUser.role] || 'bookings');
   };
 
   const handleLogout = () => {
@@ -515,16 +541,79 @@ export default function App() {
     }
   };
 
-  const handleAddStaff = (staff: StaffAccount) => {
+  const handleAddStaff = async (staff: StaffAccount) => {
     if (user?.role !== 'admin') return;
-    setStaffAccounts((prev) => [...(Array.isArray(prev) ? prev : []), staff]);
-    showToast(`${staff.displayName} (${staff.username}) 직원이 등록되었습니다.`);
+    setStaffAccounts((prev) => [staff, ...(Array.isArray(prev) ? prev : [])]);
+
+    if (!isSupabaseConfigured || staffAccountsWarning) {
+      showToast(`${staff.fullName || staff.displayName} (${staff.username}) 계정이 등록되었습니다.`);
+      return;
+    }
+
+    try {
+      const saved = await createAppUser(staff);
+      setStaffAccounts((prev) =>
+        (Array.isArray(prev) ? prev : []).map((s) => (s.id === staff.id ? saved : s))
+      );
+      showToast(
+        `${saved.fullName || saved.displayName} (${saved.username}) 계정이 Supabase에 저장되었습니다.`
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '직원 계정 등록 실패';
+      setStaffAccountsWarning(msg);
+      showToast('로컬 계정에 저장되었습니다. (Supabase app_users 테이블을 확인해 주세요)');
+    }
   };
 
-  const handleDeleteStaff = (id: string) => {
+  const handleUpdateStaff = async (
+    id: string,
+    updates: Partial<
+      Pick<
+        StaffAccount,
+        'role' | 'password' | 'isActive' | 'fullName' | 'displayName' | 'position' | 'phone'
+      >
+    >
+  ) => {
+    if (user?.role !== 'admin') return;
+    setStaffAccounts((prev) =>
+      (Array.isArray(prev) ? prev : []).map((s) => (s.id === id ? { ...s, ...updates } : s))
+    );
+
+    if (!isSupabaseConfigured || staffAccountsWarning) {
+      showToast('직원 권한/계정 정보가 변경되었습니다.');
+      return;
+    }
+
+    try {
+      const saved = await updateAppUser(id, updates);
+      setStaffAccounts((prev) =>
+        (Array.isArray(prev) ? prev : []).map((s) => (s.id === id ? saved : s))
+      );
+      showToast('Supabase 직원 권한/계정 정보가 업데이트되었습니다.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '직원 정보 수정 실패';
+      setStaffAccountsWarning(msg);
+      showToast('로컬 계정에 반영되었습니다.');
+    }
+  };
+
+  const handleDeleteStaff = async (id: string) => {
     if (user?.role !== 'admin') return;
     setStaffAccounts((prev) => (Array.isArray(prev) ? prev.filter((s) => s.id !== id) : []));
-    showToast('직원 계정이 삭제되었습니다.');
+
+    if (!isSupabaseConfigured || staffAccountsWarning) {
+      showToast('직원 계정이 삭제되었습니다.');
+      return;
+    }
+
+    try {
+      await deleteAppUser(id);
+      showToast('Supabase에서 직원 계정이 삭제되었습니다.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '직원 계정 삭제 실패';
+      setStaffAccountsWarning(msg);
+      showToast('로컬 목록에서 삭제되었습니다.');
+    }
   };
 
   if (!user) {
@@ -532,38 +621,42 @@ export default function App() {
   }
 
   const isAdmin = user.role === 'admin';
-  const menuItems: Array<{
+  const allowedTabs = ROLE_ALLOWED_TABS[user.role] || ROLE_ALLOWED_TABS.staff;
+  const userRoleMeta = USER_ROLE_META[user.role] || USER_ROLE_META.staff;
+  const userDisplayName = user.fullName || user.displayName || user.username;
+
+  const allMenuItems: Array<{
     id: MenuTab;
     label: string;
     icon: React.FC<{ className?: string }>;
   }> = [
     { id: 'schedule', label: '월간 통합 스케줄', icon: CalendarDays },
-    { id: 'bookings', label: '견적 업로드 & 예약 목록', icon: FileUp },
-    ...(isAdmin
-      ? [
-          { id: 'daily-expenses' as const, label: '일자별 지출관리', icon: CalendarCheck },
-          { id: 'finance' as const, label: '자금 및 정산 관리', icon: Wallet },
-          { id: 'pnl' as const, label: '재무/손익 관리', icon: BarChart3 },
-          { id: 'master-prices' as const, label: '단가표 관리', icon: Tags },
-          { id: 'excel' as const, label: '엑셀 시트', icon: Sheet },
-          { id: 'staff' as const, label: '직원 관리', icon: Users },
-        ]
-      : []),
+    { id: 'bookings', label: '견적/예약 관리', icon: FileUp },
+    { id: 'daily-expenses', label: '일자별 지출관리', icon: CalendarCheck },
+    { id: 'finance', label: '자금 및 정산 관리', icon: Wallet },
+    { id: 'pnl', label: '재무/손익 관리', icon: BarChart3 },
+    { id: 'master-prices', label: '단가표 관리', icon: Tags },
+    { id: 'excel', label: '엑셀 시트', icon: Sheet },
+    { id: 'staff', label: '직원 권한 관리', icon: Users },
   ];
 
-  const activeReservation = detailReservationId
-    ? safeReservations.find((r) => r.id === detailReservationId) || null
-    : null;
+  const menuItems = allMenuItems.filter((item) => allowedTabs.includes(item.id));
+
+  const activeReservation =
+    detailReservationId && user.role !== 'guide'
+      ? safeReservations.find((r) => r.id === detailReservationId) || null
+      : null;
 
   const pageTitleMap: Record<MenuTab, string> = {
     schedule: '월간 통합 스케줄',
-    bookings: '견적 업로드 & 예약 목록',
-    'daily-expenses': '일자별 지출관리',
+    bookings: '견적/예약 관리',
+    'daily-expenses':
+      user.role === 'accountant' ? '일자별 지출관리 (조회 전용)' : '일자별 지출관리',
     finance: '자금 및 정산 관리',
     pnl: '재무/손익 관리',
     'master-prices': '단가표 관리 (표준 원가)',
     excel: '엑셀 시트 (관리자 전용)',
-    staff: '직원 관리 (등록 · 삭제)',
+    staff: '직원 권한 관리',
   };
 
   return (
@@ -611,11 +704,18 @@ export default function App() {
         {/* User Account Footer */}
         <div className="p-4 border-t border-slate-100">
           <div className="px-3.5 py-3 rounded-xl bg-slate-50 border border-slate-200/80 mb-2.5">
-            <div className="text-xs font-bold text-slate-900">
-              {user.displayName}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-slate-900 truncate">
+                {userDisplayName}
+              </span>
+              <span
+                className={`px-1.5 py-0.5 text-[10px] font-bold border rounded-md whitespace-nowrap shrink-0 ${userRoleMeta.badgeClass}`}
+              >
+                {userRoleMeta.label}
+              </span>
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
-              @{user.username} · {isAdmin ? '전체 권한' : '일정 관리 전용'}
+            <div className="text-[11px] text-slate-500 mt-0.5 font-mono truncate">
+              @{user.username}
             </div>
           </div>
           <button
@@ -699,28 +799,44 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                exportReservationsToCsv(reservations, user.role);
-                showToast('CSV 파일이 다운로드되었습니다.');
-              }}
-              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-[#065F46]" />
-              <span className="hidden sm:inline">엑셀(CSV) 내보내기</span>
-              <span className="sm:hidden">CSV</span>
-            </button>
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    exportReservationsToCsv(reservations, user.role);
+                    showToast('CSV 파일이 다운로드되었습니다.');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-[#065F46]" />
+                  <span className="hidden sm:inline">엑셀(CSV) 내보내기</span>
+                  <span className="sm:hidden">CSV</span>
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setBackupModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Database className="w-3.5 h-3.5 text-[#D97706]" />
-              <span className="hidden sm:inline">데이터 백업/복원</span>
-              <span className="sm:hidden">백업</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setBackupModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Database className="w-3.5 h-3.5 text-[#D97706]" />
+                  <span className="hidden sm:inline">데이터 백업/복원</span>
+                  <span className="sm:hidden">백업</span>
+                </button>
+              </>
+            )}
+
+            {/* Top-Right Logged-in User Name & Role Badge */}
+            <div className="inline-flex items-center gap-2 px-2.5 sm:px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl whitespace-nowrap shrink-0">
+              <span className="text-xs font-bold text-slate-900 max-w-[96px] sm:max-w-none truncate">
+                {userDisplayName}
+              </span>
+              <span
+                className={`px-2 py-0.5 text-[11px] font-bold border rounded-md whitespace-nowrap shrink-0 ${userRoleMeta.badgeClass}`}
+              >
+                {userRoleMeta.label}
+              </span>
+            </div>
           </div>
         </header>
 
@@ -740,7 +856,7 @@ export default function App() {
             </div>
           ) : (
             <>
-              {activeTab === 'schedule' && (
+              {activeTab === 'schedule' && allowedTabs.includes('schedule') && (
                 <ScheduleView
                   reservations={reservations}
                   role={user.role}
@@ -749,32 +865,35 @@ export default function App() {
                 />
               )}
 
-              {activeTab === 'bookings' && (
+              {activeTab === 'bookings' && allowedTabs.includes('bookings') && (
                 <BookingsView
                   reservations={reservations}
                   masterPrices={masterPrices}
                   role={user.role}
                   onAddReservation={handleAddReservation}
-                  onOpenReservationDetail={(id) => setDetailReservationId(id)}
-                />
-              )}
-
-              {activeTab === 'daily-expenses' && isAdmin && (
-                <DailyExpenseView
-                  reservations={reservations}
                   onUpdateReservation={handleUpdateReservation}
                   onOpenReservationDetail={(id) => setDetailReservationId(id)}
                 />
               )}
 
-              {activeTab === 'finance' && isAdmin && (
+              {activeTab === 'daily-expenses' && allowedTabs.includes('daily-expenses') && (
+                <DailyExpenseView
+                  reservations={reservations}
+                  readOnly={user.role === 'accountant'}
+                  canOpenTourDetail={user.role !== 'guide'}
+                  onUpdateReservation={handleUpdateReservation}
+                  onOpenReservationDetail={(id) => setDetailReservationId(id)}
+                />
+              )}
+
+              {activeTab === 'finance' && allowedTabs.includes('finance') && (
                 <FinanceView
                   reservations={reservations}
                   onUpdateReservation={handleUpdateReservation}
                 />
               )}
 
-              {activeTab === 'pnl' && isAdmin && (
+              {activeTab === 'pnl' && allowedTabs.includes('pnl') && (
                 <ProfitLossView
                   reservations={reservations}
                   fixedCosts={fixedCosts}
@@ -786,7 +905,7 @@ export default function App() {
                 />
               )}
 
-              {activeTab === 'master-prices' && isAdmin && (
+              {activeTab === 'master-prices' && allowedTabs.includes('master-prices') && (
                 <MasterPricesView
                   masterPrices={masterPrices}
                   tableWarning={masterPricesWarning}
@@ -796,7 +915,7 @@ export default function App() {
                 />
               )}
 
-              {activeTab === 'excel' && isAdmin && (
+              {activeTab === 'excel' && allowedTabs.includes('excel') && (
                 <ExcelSheetView
                   reservations={reservations}
                   excelRows={excelRows}
@@ -807,10 +926,12 @@ export default function App() {
                 />
               )}
 
-              {activeTab === 'staff' && isAdmin && (
+              {activeTab === 'staff' && allowedTabs.includes('staff') && (
                 <StaffManageView
                   staffAccounts={staffAccounts}
+                  tableWarning={staffAccountsWarning}
                   onAddStaff={handleAddStaff}
+                  onUpdateStaff={handleUpdateStaff}
                   onDeleteStaff={handleDeleteStaff}
                 />
               )}
@@ -832,7 +953,7 @@ export default function App() {
       )}
 
       {/* Backup & Restore Modal */}
-      {backupModalOpen && (
+      {backupModalOpen && isAdmin && (
         <BackupModal
           reservations={reservations}
           onRestoreReservations={handleRestoreReservations}

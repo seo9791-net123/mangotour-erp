@@ -1,14 +1,22 @@
-export type UserRole = 'admin' | 'staff';
+export type UserRole = 'admin' | 'staff' | 'guide' | 'accountant';
 
 export interface AuthUser {
+  id?: string;
   username: string;
   role: UserRole;
   displayName: string;
+  fullName?: string;
 }
 
 export type ScheduleType = 'GOLF' | 'TOUR';
 export type GolfBookingStatus = '대기' | '확정';
-export type BookingStatus = '상담중' | '예약확정' | '진행중' | '완료' | '취소';
+export const BOOKING_STATUSES = [
+  '견적대기',
+  '예약확정',
+  '행사완료',
+  '예약취소',
+] as const;
+export type BookingStatus = (typeof BOOKING_STATUSES)[number];
 export const COST_CATEGORIES = [
   '숙박',
   '골프장',
@@ -70,6 +78,8 @@ export interface Reservation {
   endDate: string; // YYYY-MM-DD
   managerName: string;
   status: BookingStatus;
+  cancelFeeRevenueKrw?: number;
+  cancelPenaltyCostKrw?: number;
   totalPriceUsd: number;
   totalPriceKrw: number;
   exchangeRate: number;
@@ -128,6 +138,9 @@ export interface StaffAccount {
   username: string;
   password: string;
   displayName: string;
+  fullName?: string;
+  role: UserRole;
+  isActive: boolean;
   position: string;
   phone?: string;
   createdAt: string;

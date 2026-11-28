@@ -15,10 +15,13 @@ import {
   formatUsd,
   getCostItemCurrency,
   getCostItemOriginalAmount,
+  isBookingCancelled,
 } from '../utils/storage';
 
 interface DailyExpenseViewProps {
   reservations: Reservation[];
+  readOnly?: boolean;
+  canOpenTourDetail?: boolean;
   onUpdateReservation: (id: string, updates: Partial<Reservation>) => void;
   onOpenReservationDetail: (id: string) => void;
 }
@@ -110,6 +113,8 @@ const CATEGORY_BADGE_CLASS: Record<CostCategory, string> = {
 
 export const DailyExpenseView: React.FC<DailyExpenseViewProps> = ({
   reservations,
+  readOnly = false,
+  canOpenTourDetail = true,
   onUpdateReservation,
   onOpenReservationDetail,
 }) => {
@@ -132,7 +137,7 @@ export const DailyExpenseView: React.FC<DailyExpenseViewProps> = ({
     const flattened: FlattenedExpenseItem[] = [];
 
     safeReservations.forEach((res) => {
-      if (!res || res.status === '취소') return;
+      if (!res || isBookingCancelled(res)) return;
       const costs = Array.isArray(res.costItems) ? res.costItems : [];
       const krwRate = Number(res.exchangeRate) > 0 ? Number(res.exchangeRate) : DEFAULT_KRW_RATE;
       const vndRate =
@@ -299,6 +304,7 @@ export const DailyExpenseView: React.FC<DailyExpenseViewProps> = ({
   }, [visibleItems]);
 
   const handleTogglePaid = (reservation: Reservation, costId: string, nextPaid: boolean) => {
+    if (readOnly) return;
     const currentCosts = Array.isArray(reservation.costItems) ? reservation.costItems : [];
     const nextCosts = currentCosts.map((c) => (c.id === costId ? { ...c, paid: nextPaid } : c));
     onUpdateReservation(reservation.id, { costItems: nextCosts });
@@ -309,6 +315,7 @@ export const DailyExpenseView: React.FC<DailyExpenseViewProps> = ({
     costId: string,
     nextServiceDate: string
   ) => {
+    if (readOnly) return;
     const currentCosts = Array.isArray(reservation.costItems) ? reservation.costItems : [];
     const nextCosts = currentCosts.map((c) =>
       c.id === costId ? { ...c, serviceDate: nextServiceDate } : c
@@ -378,7 +385,9 @@ export const DailyExpenseView: React.FC<DailyExpenseViewProps> = ({
               {formatKrw(summaryStats.unpaid.totalKrw)}
             </p>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              체크 시 즉시 Supabase 저장 및 잔액 차감
+              {readOnly
+                ? '조회 전용 모드 (지불 상태 및 날짜 수정 제한)'
+                : '체크 시 즉시 Supabase 저장 및 잔액 차감'}
             </p>
           </div>
 
@@ -698,46 +707,66 @@ export const DailyExpenseView: React.FC<DailyExpenseViewProps> = ({
                             <span className="text-xs font-mono font-semibold text-slate-700 whitespace-nowrap">
                               {formatShortDateWithWeekday(item.serviceDate)}
                             </span>
-                            <input
-                              type="date"
-                              aria-label="진행 날짜 변경"
-                              value={item.serviceDate}
-                              onChange={(e) => {
-                                if (!e.target.value) return;
-                                handleChangeServiceDate(reservation, cost.id, e.target.value);
-                              }}
-                              className="px-1.5 py-0.5 text-[10px] font-mono text-slate-500 bg-slate-50 border border-slate-200 rounded focus:outline-none focus:bg-white focus:border-[#065F46] w-28"
-                            />
+                            {!readOnly && (
+                              <input
+                                type="date"
+                                aria-label="진행 날짜 변경"
+                                value={item.serviceDate}
+                                onChange={(e) => {
+                                  if (!e.target.value) return;
+                                  handleChangeServiceDate(reservation, cost.id, e.target.value);
+                                }}
+                                className="px-1.5 py-0.5 text-[10px] font-mono text-slate-500 bg-slate-50 border border-slate-200 rounded focus:outline-none focus:bg-white focus:border-[#065F46] w-28"
+                              />
+                            )}
                           </div>
 
                           {/* Mobile quick status badge */}
-                          <label className="md:hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none whitespace-nowrap shrink-0 bg-white border-slate-200">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(cost.paid)}
-                              onChange={(e) =>
-                                handleTogglePaid(reservation, cost.id, e.target.checked)
-                              }
-                              className="w-4 h-4 accent-[#065F46] rounded cursor-pointer"
-                            />
-                            <span className={cost.paid ? 'text-[#065F46]' : 'text-slate-600'}>
+                          {readOnly ? (
+                            <span
+                              className={`md:hidden inline-flex items-center px-2.5 py-1 rounded-xl border text-xs font-semibold whitespace-nowrap shrink-0 ${
+                                cost.paid
+                                  ? 'bg-emerald-50 border-emerald-200 text-[#065F46]'
+                                  : 'bg-slate-50 border-slate-200 text-slate-600'
+                              }`}
+                            >
                               {cost.paid ? '지불 완료' : '미지급'}
                             </span>
-                          </label>
+                          ) : (
+                            <label className="md:hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer select-none whitespace-nowrap shrink-0 bg-white border-slate-200">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(cost.paid)}
+                                onChange={(e) =>
+                                  handleTogglePaid(reservation, cost.id, e.target.checked)
+                                }
+                                className="w-4 h-4 accent-[#065F46] rounded cursor-pointer"
+                              />
+                              <span className={cost.paid ? 'text-[#065F46]' : 'text-slate-600'}>
+                                {cost.paid ? '지불 완료' : '미지급'}
+                              </span>
+                            </label>
+                          )}
                         </div>
 
                         {/* 2. 고객명(또는 상품명) */}
                         <div className="md:col-span-3 min-w-0">
-                          <button
-                            type="button"
-                            onClick={() => onOpenReservationDetail(reservation.id)}
-                            className="inline-flex items-center gap-1 text-xs font-bold text-[#065F46] hover:underline cursor-pointer max-w-full"
-                          >
-                            <span className="truncate">
+                          {canOpenTourDetail ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenReservationDetail(reservation.id)}
+                              className="inline-flex items-center gap-1 text-xs font-bold text-[#065F46] hover:underline cursor-pointer max-w-full"
+                            >
+                              <span className="truncate">
+                                {reservation.customerName} ({reservation.customerCount}인)
+                              </span>
+                              <ExternalLink className="w-3 h-3 text-slate-400 shrink-0" />
+                            </button>
+                          ) : (
+                            <span className="block text-xs font-bold text-slate-800 truncate">
                               {reservation.customerName} ({reservation.customerCount}인)
                             </span>
-                            <ExternalLink className="w-3 h-3 text-slate-400 shrink-0" />
-                          </button>
+                          )}
                           <p className="text-[11px] text-slate-500 truncate mt-0.5">
                             {reservation.productName}
                           </p>
@@ -789,23 +818,35 @@ export const DailyExpenseView: React.FC<DailyExpenseViewProps> = ({
 
                         {/* 5. 지불 상태 체크박스 (Desktop) */}
                         <div className="hidden md:flex md:col-span-1 justify-end">
-                          <label
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer select-none ${
-                              cost.paid
-                                ? 'bg-emerald-50 border-emerald-200 text-[#065F46]'
-                                : 'bg-white border-slate-300 text-slate-600 hover:border-[#065F46]'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={Boolean(cost.paid)}
-                              onChange={(e) =>
-                                handleTogglePaid(reservation, cost.id, e.target.checked)
-                              }
-                              className="w-3.5 h-3.5 accent-[#065F46] rounded cursor-pointer"
-                            />
-                            <span>{cost.paid ? '완료' : '지불'}</span>
-                          </label>
+                          {readOnly ? (
+                            <span
+                              className={`inline-flex items-center px-2.5 py-1 rounded-xl border text-xs font-semibold whitespace-nowrap shrink-0 ${
+                                cost.paid
+                                  ? 'bg-emerald-50 border-emerald-200 text-[#065F46]'
+                                  : 'bg-slate-50 border-slate-200 text-slate-500'
+                              }`}
+                            >
+                              {cost.paid ? '지불 완료' : '미지급'}
+                            </span>
+                          ) : (
+                            <label
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer select-none ${
+                                cost.paid
+                                  ? 'bg-emerald-50 border-emerald-200 text-[#065F46]'
+                                  : 'bg-white border-slate-300 text-slate-600 hover:border-[#065F46]'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={Boolean(cost.paid)}
+                                onChange={(e) =>
+                                  handleTogglePaid(reservation, cost.id, e.target.checked)
+                                }
+                                className="w-3.5 h-3.5 accent-[#065F46] rounded cursor-pointer"
+                              />
+                              <span>{cost.paid ? '완료' : '지불'}</span>
+                            </label>
+                          )}
                         </div>
                       </div>
                     );

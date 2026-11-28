@@ -119,7 +119,7 @@ export const INITIAL_RESERVATIONS: Reservation[] = [
     startDate: '2026-11-26',
     endDate: '2026-11-29',
     managerName: '박지훈 팀장',
-    status: '진행중',
+    status: '예약확정',
     totalPriceUsd: 2450,
     totalPriceKrw: 3430000,
     exchangeRate: 1400,

@@ -9,7 +9,17 @@ export interface AuthUser {
 export type ScheduleType = 'GOLF' | 'TOUR';
 export type GolfBookingStatus = '대기' | '확정';
 export type BookingStatus = '상담중' | '예약확정' | '진행중' | '완료' | '취소';
-export type CostCategory = '숙박' | '차량' | '가이드' | '마사지' | '골프장' | '식사' | '기타';
+export const COST_CATEGORIES = [
+  '숙박',
+  '골프장',
+  '차량',
+  '가이드',
+  '식사',
+  '마사지/옵션',
+  '기타',
+] as const;
+export type CostCategory = (typeof COST_CATEGORIES)[number];
+export type CostCurrency = 'USD' | 'VND' | 'KRW';
 
 export interface ScheduleItem {
   id: string;
@@ -38,6 +48,9 @@ export interface CostItem {
   title: string;
   category: CostCategory;
   source: 'PDF포함' | '골프원가' | '직접추가';
+  serviceDate?: string; // 실제 진행 날짜 YYYY-MM-DD
+  currency?: CostCurrency;
+  originalAmount?: number;
   costUsd: number;
   costKrw: number;
   paid: boolean;
@@ -60,6 +73,7 @@ export interface Reservation {
   totalPriceUsd: number;
   totalPriceKrw: number;
   exchangeRate: number;
+  vndExchangeRate?: number;
   depositPaid: boolean;
   depositAmountUsd: number;
   balancePaid: boolean;
@@ -94,6 +108,7 @@ export interface ParsedQuoteResult {
   includedCostItems: Array<{
     title: string;
     category: string;
+    serviceDate?: string;
     note?: string;
   }>;
   scheduleItems: Array<{
@@ -129,5 +144,37 @@ export interface ExcelSheetRow {
   paymentMethod: string;
   status: '완료' | '대기' | '보류';
   note: string;
+}
+
+export const FIXED_COST_CATEGORIES = [
+  '직원 급여',
+  '사무실 임대료',
+  '마케팅/광고비',
+  '통신/운영비',
+  '기타',
+] as const;
+export type FixedCostCategory = (typeof FIXED_COST_CATEGORIES)[number];
+
+export interface MonthlyFixedCost {
+  id: string;
+  yearMonth: string; // YYYY-MM
+  category: FixedCostCategory;
+  title: string;
+  currency: CostCurrency;
+  originalAmount: number;
+  amountKrw: number;
+  note?: string;
+}
+
+export interface MasterPrice {
+  id: string;
+  createdAt?: string;
+  category: CostCategory;
+  keyword: string;
+  vendorName?: string;
+  weekdayPrice: number;
+  weekendPrice: number;
+  currency: CostCurrency;
+  note?: string;
 }
 

@@ -1,12 +1,14 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
-import type {
-  BookingStatus,
-  CostCategory,
-  CostItem,
-  Reservation,
-  RevenueItem,
-  ScheduleItem,
-  ScheduleType,
+import {
+  COST_CATEGORIES,
+  type BookingStatus,
+  type CostCategory,
+  type CostCurrency,
+  type CostItem,
+  type Reservation,
+  type RevenueItem,
+  type ScheduleItem,
+  type ScheduleType,
 } from '../types/erp';
 
 export interface SupabaseBookingRow {
@@ -30,12 +32,14 @@ export interface SupabaseBookingRow {
   inclusions?: string | null;
   exclusions?: string | null;
   status?: string | null;
+  exchange_rate_vnd?: number | null;
 }
 
 interface IncludedMetaPayload {
   bookingCode?: string;
   rawCustomerText?: string;
   exchangeRate?: number;
+  vndExchangeRate?: number;
   depositAmountUsd?: number;
   balanceAmountUsd?: number;
   revenueItems?: RevenueItem[];
@@ -104,18 +108,62 @@ function normalizeScheduleItem(raw: Partial<ScheduleItem>, idx: number, fallback
   };
 }
 
-function normalizeCostItem(raw: Partial<CostItem>, idx: number): CostItem {
-  const validCategories: CostCategory[] = ['숙박', '차량', '가이드', '마사지', '골프장', '식사', '기타'];
-  const category = validCategories.includes(raw?.category as CostCategory)
-    ? (raw.category as CostCategory)
+function normalizeCostItem(
+  raw: Partial<CostItem> & { service_date?: string },
+  idx: number,
+  fallbackDate: string,
+  schedules: ScheduleItem[]
+): CostItem {
+  const rawCategory = String(raw?.category || '');
+  const mappedCategory = rawCategory === '마사지' ? '마사지/옵션' : rawCategory;
+  const category: CostCategory = (COST_CATEGORIES as readonly string[]).includes(mappedCategory)
+    ? (mappedCategory as CostCategory)
     : '기타';
+
+  const currency: CostCurrency =
+    raw?.currency === 'VND' || raw?.currency === 'KRW' ? raw.currency : 'USD';
+  const costUsd = Number(raw?.costUsd) || 0;
+  const costKrw = Number(raw?.costKrw) || 0;
+  const originalAmount =
+    typeof raw?.originalAmount === 'number' && Number.isFinite(raw.originalAmount)
+      ? raw.originalAmount
+      : currency === 'KRW'
+        ? costKrw
+        : costUsd;
+
+  const title = raw?.title || '원가 항목';
+  const rawServiceDate = String(raw?.serviceDate || raw?.service_date || '').trim();
+  let serviceDate = /^\d{4}-\d{2}-\d{2}$/.test(rawServiceDate) ? rawServiceDate : '';
+  if (!serviceDate) {
+    const embeddedDate = /(\d{4}-\d{2}-\d{2})/.exec(title);
+    if (embeddedDate) {
+      serviceDate = embeddedDate[1];
+    }
+  }
+  if (!serviceDate && category === '골프장' && schedules.length > 0) {
+    const matchedGolf = schedules.find((s) => {
+      if (s.type !== 'GOLF') return false;
+      const courseBase = (s.golfCourseName || s.title || '').replace(/\s*CC.*$/i, '').trim();
+      return courseBase.length >= 2 && title.includes(courseBase);
+    });
+    if (matchedGolf) {
+      serviceDate = matchedGolf.date;
+    }
+  }
+  if (!serviceDate) {
+    serviceDate = fallbackDate;
+  }
+
   return {
     id: raw?.id || `cost-${idx + 1}-${Math.random().toString(36).slice(2, 6)}`,
-    title: raw?.title || '원가 항목',
+    title,
     category,
     source: raw?.source || 'PDF포함',
-    costUsd: Number(raw?.costUsd) || 0,
-    costKrw: Number(raw?.costKrw) || 0,
+    serviceDate,
+    currency,
+    originalAmount,
+    costUsd,
+    costKrw,
     paid: Boolean(raw?.paid),
     note: raw?.note || '',
   };
@@ -140,7 +188,13 @@ export function mapBookingRowToReservation(row: SupabaseBookingRow): Reservation
     meta = parseObjectField<IncludedMetaPayload>(row?.included_items);
   }
 
-  const exchangeRate = Number(meta?.exchangeRate) || 1400;
+  const exchangeRate = Number(meta?.exchangeRate) > 0 ? Number(meta.exchangeRate) : 1400;
+  const vndExchangeRate =
+    Number(row?.exchange_rate_vnd) > 0
+      ? Number(row.exchange_rate_vnd)
+      : Number(meta?.vndExchangeRate) > 0
+        ? Number(meta.vndExchangeRate)
+        : 25400;
   const dateCode = startDate.replace(/-/g, '').slice(2, 6) || '2601';
   const fallbackCode = `MT-${dateCode}-${(rowId.slice(0, 3) || '000').toUpperCase()}`;
 
@@ -148,7 +202,7 @@ export function mapBookingRowToReservation(row: SupabaseBookingRow): Reservation
     normalizeScheduleItem(s, idx, startDate)
   );
   const rawCosts = parseArrayField<Partial<CostItem>>(row?.cost_items).map((c, idx) =>
-    normalizeCostItem(c, idx)
+    normalizeCostItem(c, idx, startDate, rawSchedules)
   );
   const rawRevenue = parseArrayField<RevenueItem>(meta?.revenueItems);
 
@@ -171,6 +225,7 @@ export function mapBookingRowToReservation(row: SupabaseBookingRow): Reservation
     totalPriceUsd: totalUsd,
     totalPriceKrw: totalKrw || Math.round(totalUsd * exchangeRate),
     exchangeRate,
+    vndExchangeRate,
     depositPaid: Boolean(row?.deposit_paid),
     depositAmountUsd:
       typeof meta?.depositAmountUsd === 'number'
@@ -207,6 +262,7 @@ export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow
     bookingCode: res.bookingCode,
     rawCustomerText: res.rawCustomerText,
     exchangeRate: res.exchangeRate,
+    vndExchangeRate: res.vndExchangeRate || 25400,
     depositAmountUsd: res.depositAmountUsd,
     balanceAmountUsd: res.balanceAmountUsd,
     revenueItems: safeRevenueItems,
@@ -215,6 +271,15 @@ export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow
       .filter((c) => c.source === 'PDF포함')
       .map((c) => ({ title: c.title, category: c.category, note: c.note })),
   };
+
+  const serializedCostItems = safeCostItems.map((item) => {
+    const serviceDate = item.serviceDate || res.startDate || '';
+    return {
+      ...item,
+      serviceDate,
+      service_date: serviceDate,
+    };
+  });
 
   return {
     id: res.id,
@@ -232,11 +297,12 @@ export function mapReservationToBookingRow(res: Reservation): SupabaseBookingRow
     deposit_paid: Boolean(res.depositPaid),
     balance_paid: Boolean(res.balancePaid),
     included_items: includedMeta,
-    cost_items: safeCostItems,
+    cost_items: serializedCostItems,
     schedules: safeScheduleItems,
     inclusions: inclusionsText,
     exclusions: res.exclusions || res.memo || '',
     status: res.status,
+    exchange_rate_vnd: Number(res.vndExchangeRate) || 25400,
   };
 }
 
@@ -272,6 +338,16 @@ export async function fetchBookings(): Promise<Reservation[]> {
   return (rows as SupabaseBookingRow[]).map(mapBookingRowToReservation);
 }
 
+function isMissingVndColumnError(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  const code = error.code || '';
+  const msg = (error.message || '').toLowerCase();
+  return (
+    (code === 'PGRST204' || code === '42703' || msg.includes('schema cache') || msg.includes('column')) &&
+    msg.includes('exchange_rate_vnd')
+  );
+}
+
 export async function createBooking(reservation: Reservation): Promise<Reservation> {
   const client = assertSupabase();
   const row = mapReservationToBookingRow(reservation);
@@ -280,6 +356,19 @@ export async function createBooking(reservation: Reservation): Promise<Reservati
     .insert(row)
     .select('*')
     .single();
+
+  if (error && isMissingVndColumnError(error)) {
+    const { exchange_rate_vnd: _omit, ...fallbackRow } = row;
+    const retry = await client
+      .from('bookings')
+      .insert(fallbackRow)
+      .select('*')
+      .single();
+    if (retry.error) {
+      throw formatSupabaseError('예약 저장', retry.error);
+    }
+    return mapBookingRowToReservation((retry.data || fallbackRow) as SupabaseBookingRow);
+  }
 
   if (error) {
     throw formatSupabaseError('예약 저장', error);
@@ -298,6 +387,20 @@ export async function updateBooking(reservation: Reservation): Promise<Reservati
     .eq('id', id)
     .select('*')
     .single();
+
+  if (error && isMissingVndColumnError(error)) {
+    const { exchange_rate_vnd: _omit, ...fallbackPayload } = updatePayload;
+    const retry = await client
+      .from('bookings')
+      .update(fallbackPayload)
+      .eq('id', id)
+      .select('*')
+      .single();
+    if (retry.error) {
+      throw formatSupabaseError('예약 수정', retry.error);
+    }
+    return mapBookingRowToReservation((retry.data || row) as SupabaseBookingRow);
+  }
 
   if (error) {
     throw formatSupabaseError('예약 수정', error);
@@ -322,6 +425,19 @@ export async function upsertBookingsBatch(reservations: Reservation[]): Promise<
     .from('bookings')
     .upsert(rows, { onConflict: 'id' })
     .select('*');
+
+  if (error && isMissingVndColumnError(error)) {
+    const fallbackRows = rows.map(({ exchange_rate_vnd: _omit, ...rest }) => rest);
+    const retry = await client
+      .from('bookings')
+      .upsert(fallbackRows, { onConflict: 'id' })
+      .select('*');
+    if (retry.error) {
+      throw formatSupabaseError('일괄 저장', retry.error);
+    }
+    const retryRows = Array.isArray(retry.data) ? retry.data : [];
+    return (retryRows as SupabaseBookingRow[]).map(mapBookingRowToReservation);
+  }
 
   if (error) {
     throw formatSupabaseError('일괄 저장', error);

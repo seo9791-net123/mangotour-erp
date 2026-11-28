@@ -1,10 +1,23 @@
-import type { AuthUser, ExcelSheetRow, Reservation, StaffAccount, UserRole } from '../types/erp';
+import type {
+  AuthUser,
+  CostCurrency,
+  CostItem,
+  ExcelSheetRow,
+  MonthlyFixedCost,
+  Reservation,
+  StaffAccount,
+  UserRole,
+} from '../types/erp';
 import { INITIAL_RESERVATIONS } from './sampleData';
+
+export const DEFAULT_KRW_RATE = 1400;
+export const DEFAULT_VND_RATE = 25400;
 
 const RESERVATIONS_KEY = 'mango_tour_erp_reservations_v1';
 const AUTH_KEY = 'mango_tour_erp_auth_v1';
 const STAFF_ACCOUNTS_KEY = 'mango_tour_erp_staff_v1';
 const EXCEL_SHEET_KEY = 'mango_tour_erp_excel_sheet_v1';
+const FIXED_COSTS_KEY = 'mango_tour_erp_monthly_fixed_costs_v1';
 
 export const DEFAULT_STAFF_ACCOUNTS: StaffAccount[] = [
   {
@@ -143,10 +156,12 @@ export function saveAuthUser(user: AuthUser | null): void {
 
 export function formatUsd(amount: number): string {
   const safe = Number.isFinite(amount) ? amount : 0;
+  const hasCents = Math.abs(safe - Math.round(safe)) >= 0.005;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: hasCents ? 2 : 0,
   }).format(safe);
 }
 
@@ -155,20 +170,107 @@ export function formatKrw(amount: number): string {
   return `${new Intl.NumberFormat('ko-KR').format(Math.round(safe))}원`;
 }
 
+export function convertCostAmount(
+  amount: number,
+  currency: CostCurrency,
+  krwPerUsd: number,
+  vndPerUsd: number
+): { costUsd: number; costKrw: number } {
+  const safeAmount = Number.isFinite(amount) && amount >= 0 ? amount : 0;
+  const safeKrwRate = Number.isFinite(krwPerUsd) && krwPerUsd > 0 ? krwPerUsd : DEFAULT_KRW_RATE;
+  const safeVndRate = Number.isFinite(vndPerUsd) && vndPerUsd > 0 ? vndPerUsd : DEFAULT_VND_RATE;
+
+  if (currency === 'VND') {
+    const usd = safeAmount / safeVndRate;
+    return {
+      costUsd: Number(usd.toFixed(2)),
+      costKrw: Math.round(usd * safeKrwRate),
+    };
+  }
+
+  if (currency === 'KRW') {
+    const usd = safeAmount / safeKrwRate;
+    return {
+      costUsd: Number(usd.toFixed(2)),
+      costKrw: Math.round(safeAmount),
+    };
+  }
+
+  return {
+    costUsd: Number(safeAmount.toFixed(2)),
+    costKrw: Math.round(safeAmount * safeKrwRate),
+  };
+}
+
+export function getCostItemCurrency(item: Partial<CostItem> | null | undefined): CostCurrency {
+  if (item?.currency === 'VND' || item?.currency === 'KRW') {
+    return item.currency;
+  }
+  return 'USD';
+}
+
+export function getCostItemOriginalAmount(item: Partial<CostItem> | null | undefined): number {
+  const currency = getCostItemCurrency(item);
+  if (typeof item?.originalAmount === 'number' && Number.isFinite(item.originalAmount)) {
+    return item.originalAmount;
+  }
+  if (currency === 'KRW') {
+    return Number(item?.costKrw) || 0;
+  }
+  return Number(item?.costUsd) || 0;
+}
+
+export function recalculateCostItemsWithRates(
+  costItems: CostItem[],
+  krwPerUsd: number,
+  vndPerUsd: number
+): CostItem[] {
+  const safeItems = Array.isArray(costItems) ? costItems : [];
+  return safeItems.map((item) => {
+    const currency = getCostItemCurrency(item);
+    const originalAmount = getCostItemOriginalAmount(item);
+    const { costUsd, costKrw } = convertCostAmount(originalAmount, currency, krwPerUsd, vndPerUsd);
+    return {
+      ...item,
+      currency,
+      originalAmount,
+      costUsd,
+      costKrw,
+    };
+  });
+}
+
 export function calculateReservationFinance(res: Reservation) {
   const costItems = Array.isArray(res?.costItems) ? res.costItems : [];
-  const totalCostUsd = costItems.reduce((sum, item) => sum + (Number(item?.costUsd) || 0), 0);
-  const totalCostKrw = costItems.reduce((sum, item) => sum + (Number(item?.costKrw) || 0), 0);
-  const netProfitUsd = (Number(res?.totalPriceUsd) || 0) - totalCostUsd;
-  const netProfitKrw = (Number(res?.totalPriceKrw) || 0) - totalCostKrw;
-  const marginPercent = (Number(res?.totalPriceUsd) || 0) > 0 ? (netProfitUsd / Number(res.totalPriceUsd)) * 100 : 0;
+  const krwRate = Number(res?.exchangeRate) > 0 ? Number(res.exchangeRate) : DEFAULT_KRW_RATE;
+  const vndRate = Number(res?.vndExchangeRate) > 0 ? Number(res.vndExchangeRate) : DEFAULT_VND_RATE;
+
+  let totalCostUsd = 0;
+  let totalCostKrw = 0;
+  costItems.forEach((item) => {
+    if (!item) return;
+    if (item.currency && typeof item.originalAmount === 'number' && Number.isFinite(item.originalAmount)) {
+      const converted = convertCostAmount(item.originalAmount, item.currency, krwRate, vndRate);
+      totalCostUsd += converted.costUsd;
+      totalCostKrw += converted.costKrw;
+    } else {
+      totalCostUsd += Number(item.costUsd) || 0;
+      totalCostKrw += Number(item.costKrw) || 0;
+    }
+  });
+
+  const totalPriceUsd = Number(res?.totalPriceUsd) || 0;
+  const totalPriceKrw = Number(res?.totalPriceKrw) || Math.round(totalPriceUsd * krwRate);
+  const netProfitUsd = totalPriceUsd - totalCostUsd;
+  const netProfitKrw = totalPriceKrw - totalCostKrw;
+  const marginPercent = totalPriceKrw > 0 ? (netProfitKrw / totalPriceKrw) * 100 : 0;
   const isUnpaid = !res?.depositPaid || !res?.balancePaid;
   const paidCostCount = costItems.filter((c) => Boolean(c?.paid)).length;
 
   return {
-    totalCostUsd,
+    totalCostUsd: Number(totalCostUsd.toFixed(2)),
     totalCostKrw,
-    netProfitUsd,
+    netProfitUsd: Number(netProfitUsd.toFixed(2)),
     netProfitKrw,
     marginPercent,
     isUnpaid,
@@ -289,6 +391,83 @@ export function exportCustomSheetToCsv(rows: ExcelSheetRow[]): void {
   URL.revokeObjectURL(url);
 }
 
+export function loadMonthlyFixedCosts(): MonthlyFixedCost[] {
+  try {
+    const raw = localStorage.getItem(FIXED_COSTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as MonthlyFixedCost[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveMonthlyFixedCosts(items: MonthlyFixedCost[]): void {
+  localStorage.setItem(FIXED_COSTS_KEY, JSON.stringify(items));
+}
+
+export function calculateReservationReceivable(res: Reservation): {
+  unpaidUsd: number;
+  unpaidKrw: number;
+} {
+  const krwRate = Number(res?.exchangeRate) > 0 ? Number(res.exchangeRate) : DEFAULT_KRW_RATE;
+  const totalUsd = Number(res?.totalPriceUsd) || 0;
+  const totalKrw = Number(res?.totalPriceKrw) || Math.round(totalUsd * krwRate);
+  const depositUsd = Number(res?.depositAmountUsd) || Math.round(totalUsd * 0.3);
+  const balanceUsd = Number(res?.balanceAmountUsd) || Math.max(0, totalUsd - depositUsd);
+
+  if (res?.depositPaid && res?.balancePaid) {
+    return { unpaidUsd: 0, unpaidKrw: 0 };
+  }
+  if (!res?.depositPaid && !res?.balancePaid) {
+    return { unpaidUsd: totalUsd, unpaidKrw: totalKrw };
+  }
+  if (!res?.depositPaid && res?.balancePaid) {
+    return { unpaidUsd: depositUsd, unpaidKrw: Math.round(depositUsd * krwRate) };
+  }
+  const depositKrw = Math.round(depositUsd * krwRate);
+  return {
+    unpaidUsd: balanceUsd,
+    unpaidKrw: Math.max(0, totalKrw - depositKrw) || Math.round(balanceUsd * krwRate),
+  };
+}
+
+export function exportAnnualPnlToCsv(
+  year: number,
+  rows: Array<{ label: string; values: Array<string | number>; annual: string | number }>
+): void {
+  const headers = [
+    '손익 항목',
+    '1월',
+    '2월',
+    '3월',
+    '4월',
+    '5월',
+    '6월',
+    '7월',
+    '8월',
+    '9월',
+    '10월',
+    '11월',
+    '12월',
+    `${year}년 연간 누적`,
+  ];
+  const csvRows = rows.map((r) => [r.label, ...r.values, r.annual]);
+  const csvContent =
+    '\uFEFF' +
+    [headers, ...csvRows].map((row) => row.map(escapeCsvCell).join(',')).join('\r\n');
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `MANGOTOUR_PNL_${year}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export function exportBackupJson(reservations: Reservation[]): void {
   const payload = {
     app: 'MANGO TOUR ERP',
@@ -306,3 +485,4 @@ export function exportBackupJson(reservations: Reservation[]): void {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
+  BarChart3,
+  CalendarCheck,
   CalendarDays,
   Database,
   FileSpreadsheet,
@@ -9,6 +11,7 @@ import {
   LogOut,
   Menu,
   Sheet,
+  Tags,
   Users,
   Wallet,
   X,
@@ -16,9 +19,12 @@ import {
 import { BackupModal } from './components/BackupModal';
 import { BookingDetailModal } from './components/BookingDetailModal';
 import { BookingsView } from './components/BookingsView';
+import { DailyExpenseView } from './components/DailyExpenseView';
 import { ExcelSheetView } from './components/ExcelSheetView';
 import { FinanceView } from './components/FinanceView';
 import { LoginView } from './components/LoginView';
+import { MasterPricesView } from './components/MasterPricesView';
+import { ProfitLossView } from './components/ProfitLossView';
 import { ScheduleView } from './components/ScheduleView';
 import { StaffManageView } from './components/StaffManageView';
 import { isSupabaseConfigured, supabaseConfigError } from './lib/supabase';
@@ -30,27 +36,63 @@ import {
   updateBooking,
   upsertBookingsBatch,
 } from './services/bookingsService';
-import type { AuthUser, ExcelSheetRow, Reservation, ScheduleItem, StaffAccount } from './types/erp';
+import {
+  createMasterPrice,
+  deleteMasterPrice,
+  fetchMasterPrices,
+  loadLocalMasterPrices,
+  saveLocalMasterPrices,
+  updateMasterPrice,
+} from './services/masterPricesService';
+import {
+  createMonthlyFixedExpense,
+  deleteMonthlyFixedExpense,
+  fetchMonthlyFixedExpenses,
+  updateMonthlyFixedExpense,
+} from './services/monthlyFixedExpensesService';
+import type {
+  AuthUser,
+  ExcelSheetRow,
+  MasterPrice,
+  MonthlyFixedCost,
+  Reservation,
+  ScheduleItem,
+  StaffAccount,
+} from './types/erp';
 import {
   exportReservationsToCsv,
   loadAuthUser,
   loadExcelSheetRows,
+  loadMonthlyFixedCosts,
   loadStaffAccounts,
   saveAuthUser,
   saveExcelSheetRows,
+  saveMonthlyFixedCosts,
   saveStaffAccounts,
 } from './utils/storage';
 import { useBodyScrollLock } from './utils/useBodyScrollLock';
 
-type MenuTab = 'schedule' | 'bookings' | 'finance' | 'excel' | 'staff';
+type MenuTab =
+  | 'schedule'
+  | 'bookings'
+  | 'daily-expenses'
+  | 'finance'
+  | 'pnl'
+  | 'master-prices'
+  | 'excel'
+  | 'staff';
 
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(() => loadAuthUser());
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [loadingBookings, setLoadingBookings] = useState<boolean>(true);
   const [supabaseError, setSupabaseError] = useState<string>('');
+  const [masterPrices, setMasterPrices] = useState<MasterPrice[]>(() => loadLocalMasterPrices());
+  const [masterPricesWarning, setMasterPricesWarning] = useState<string>('');
   const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>(() => loadStaffAccounts());
   const [excelRows, setExcelRows] = useState<ExcelSheetRow[]>(() => loadExcelSheetRows());
+  const [fixedCosts, setFixedCosts] = useState<MonthlyFixedCost[]>(() => loadMonthlyFixedCosts());
+  const [fixedCostsWarning, setFixedCostsWarning] = useState<string>('');
   const [activeTab, setActiveTab] = useState<MenuTab>('schedule');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [detailReservationId, setDetailReservationId] = useState<string | null>(null);
@@ -65,6 +107,7 @@ export default function App() {
   reservationsRef.current = safeReservations;
 
   const pendingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pendingFixedTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useBodyScrollLock(mobileMenuOpen);
 
@@ -93,9 +136,20 @@ export default function App() {
       setLoadingBookings(true);
       setSupabaseError('');
       try {
-        const list = await fetchBookings();
+        const [list, priceRes, fixedRes] = await Promise.all([
+          fetchBookings(),
+          fetchMasterPrices().catch(() => ({ items: loadLocalMasterPrices(), warning: undefined })),
+          fetchMonthlyFixedExpenses().catch(() => ({
+            items: loadMonthlyFixedCosts(),
+            warning: undefined,
+          })),
+        ]);
         if (!cancelled) {
           setReservations(Array.isArray(list) ? list : []);
+          setMasterPrices(Array.isArray(priceRes.items) ? priceRes.items : []);
+          setMasterPricesWarning(priceRes.warning || '');
+          setFixedCosts(Array.isArray(fixedRes.items) ? fixedRes.items : []);
+          setFixedCostsWarning(fixedRes.warning || '');
         }
       } catch (err: unknown) {
         if (!cancelled) {
@@ -140,6 +194,8 @@ export default function App() {
       unsubscribe();
       pendingTimersRef.current.forEach((timer) => clearTimeout(timer));
       pendingTimersRef.current.clear();
+      pendingFixedTimersRef.current.forEach((timer) => clearTimeout(timer));
+      pendingFixedTimersRef.current.clear();
     };
   }, []);
 
@@ -152,9 +208,18 @@ export default function App() {
   }, [safeExcelRows]);
 
   useEffect(() => {
+    saveMonthlyFixedCosts(Array.isArray(fixedCosts) ? fixedCosts : []);
+  }, [fixedCosts]);
+
+  useEffect(() => {
     if (
       user?.role === 'staff' &&
-      (activeTab === 'finance' || activeTab === 'excel' || activeTab === 'staff')
+      (activeTab === 'daily-expenses' ||
+        activeTab === 'finance' ||
+        activeTab === 'pnl' ||
+        activeTab === 'master-prices' ||
+        activeTab === 'excel' ||
+        activeTab === 'staff')
     ) {
       setActiveTab('schedule');
     }
@@ -300,6 +365,156 @@ export default function App() {
     }
   };
 
+  const handleAddMasterPrice = async (item: MasterPrice) => {
+    setMasterPrices((prev) => {
+      const next = [item, ...(Array.isArray(prev) ? prev : [])];
+      saveLocalMasterPrices(next);
+      return next;
+    });
+
+    if (!isSupabaseConfigured || masterPricesWarning) {
+      showToast(`'${item.keyword}' 표준 단가가 등록되었습니다.`);
+      return;
+    }
+
+    try {
+      const saved = await createMasterPrice(item);
+      setMasterPrices((prev) => {
+        const next = (Array.isArray(prev) ? prev : []).map((p) =>
+          p.id === item.id ? saved : p
+        );
+        saveLocalMasterPrices(next);
+        return next;
+      });
+      showToast(`'${saved.keyword}' 표준 단가가 Supabase에 저장되었습니다.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '단가표 저장 실패';
+      setMasterPricesWarning(msg);
+      showToast('로컬 단가표에 저장되었습니다. (Supabase 테이블 설정을 확인해 주세요)');
+    }
+  };
+
+  const handleUpdateMasterPrice = async (item: MasterPrice) => {
+    setMasterPrices((prev) => {
+      const next = (Array.isArray(prev) ? prev : []).map((p) =>
+        p.id === item.id ? item : p
+      );
+      saveLocalMasterPrices(next);
+      return next;
+    });
+
+    if (!isSupabaseConfigured || masterPricesWarning) {
+      showToast(`'${item.keyword}' 표준 단가가 수정되었습니다.`);
+      return;
+    }
+
+    try {
+      const saved = await updateMasterPrice(item);
+      setMasterPrices((prev) => {
+        const next = (Array.isArray(prev) ? prev : []).map((p) =>
+          p.id === item.id ? saved : p
+        );
+        saveLocalMasterPrices(next);
+        return next;
+      });
+      showToast(`'${saved.keyword}' 표준 단가가 수정되었습니다.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '단가표 수정 실패';
+      setMasterPricesWarning(msg);
+      showToast('로컬 단가표가 수정되었습니다.');
+    }
+  };
+
+  const handleDeleteMasterPrice = async (id: string) => {
+    setMasterPrices((prev) => {
+      const next = (Array.isArray(prev) ? prev : []).filter((p) => p.id !== id);
+      saveLocalMasterPrices(next);
+      return next;
+    });
+
+    if (!isSupabaseConfigured || masterPricesWarning) {
+      showToast('표준 단가가 삭제되었습니다.');
+      return;
+    }
+
+    try {
+      await deleteMasterPrice(id);
+      showToast('Supabase에서 표준 단가가 삭제되었습니다.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '단가표 삭제 실패';
+      setMasterPricesWarning(msg);
+      showToast('로컬 단가표에서 삭제되었습니다.');
+    }
+  };
+
+  const handleAddFixedCost = async (item: MonthlyFixedCost) => {
+    setFixedCosts((prev) => [item, ...(Array.isArray(prev) ? prev : [])]);
+
+    if (!isSupabaseConfigured || fixedCostsWarning) {
+      showToast(`'${item.title}' 고정비가 등록되었습니다.`);
+      return;
+    }
+
+    try {
+      const saved = await createMonthlyFixedExpense(item);
+      setFixedCosts((prev) =>
+        (Array.isArray(prev) ? prev : []).map((f) => (f.id === item.id ? saved : f))
+      );
+      showToast(`'${saved.title}' 고정비가 Supabase에 저장되었습니다.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '월간 고정비 저장 실패';
+      setFixedCostsWarning(msg);
+      showToast('로컬에 저장되었습니다. (Supabase monthly_fixed_expenses 테이블을 확인해 주세요)');
+    }
+  };
+
+  const handleUpdateFixedCost = (item: MonthlyFixedCost) => {
+    setFixedCosts((prev) =>
+      (Array.isArray(prev) ? prev : []).map((f) => (f.id === item.id ? item : f))
+    );
+
+    if (!isSupabaseConfigured || fixedCostsWarning) return;
+
+    const existingTimer = pendingFixedTimersRef.current.get(item.id);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+    const timer = setTimeout(async () => {
+      pendingFixedTimersRef.current.delete(item.id);
+      try {
+        await updateMonthlyFixedExpense(item);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : '월간 고정비 수정 실패';
+        setFixedCostsWarning(msg);
+      }
+    }, 350);
+    pendingFixedTimersRef.current.set(item.id, timer);
+  };
+
+  const handleDeleteFixedCost = async (id: string) => {
+    const existingTimer = pendingFixedTimersRef.current.get(id);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      pendingFixedTimersRef.current.delete(id);
+    }
+
+    setFixedCosts((prev) => (Array.isArray(prev) ? prev.filter((f) => f.id !== id) : []));
+
+    if (!isSupabaseConfigured || fixedCostsWarning) {
+      showToast('고정비 항목이 삭제되었습니다.');
+      return;
+    }
+
+    try {
+      await deleteMonthlyFixedExpense(id);
+      showToast('Supabase에서 고정비가 삭제되었습니다.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '월간 고정비 삭제 실패';
+      setFixedCostsWarning(msg);
+      showToast('로컬에서 삭제되었습니다.');
+    }
+  };
+
   const handleAddStaff = (staff: StaffAccount) => {
     if (user?.role !== 'admin') return;
     setStaffAccounts((prev) => [...(Array.isArray(prev) ? prev : []), staff]);
@@ -326,7 +541,10 @@ export default function App() {
     { id: 'bookings', label: '견적 업로드 & 예약 목록', icon: FileUp },
     ...(isAdmin
       ? [
+          { id: 'daily-expenses' as const, label: '일자별 지출관리', icon: CalendarCheck },
           { id: 'finance' as const, label: '자금 및 정산 관리', icon: Wallet },
+          { id: 'pnl' as const, label: '재무/손익 관리', icon: BarChart3 },
+          { id: 'master-prices' as const, label: '단가표 관리', icon: Tags },
           { id: 'excel' as const, label: '엑셀 시트', icon: Sheet },
           { id: 'staff' as const, label: '직원 관리', icon: Users },
         ]
@@ -340,7 +558,10 @@ export default function App() {
   const pageTitleMap: Record<MenuTab, string> = {
     schedule: '월간 통합 스케줄',
     bookings: '견적 업로드 & 예약 목록',
+    'daily-expenses': '일자별 지출관리',
     finance: '자금 및 정산 관리',
+    pnl: '재무/손익 관리',
+    'master-prices': '단가표 관리 (표준 원가)',
     excel: '엑셀 시트 (관리자 전용)',
     staff: '직원 관리 (등록 · 삭제)',
   };
@@ -531,8 +752,17 @@ export default function App() {
               {activeTab === 'bookings' && (
                 <BookingsView
                   reservations={reservations}
+                  masterPrices={masterPrices}
                   role={user.role}
                   onAddReservation={handleAddReservation}
+                  onOpenReservationDetail={(id) => setDetailReservationId(id)}
+                />
+              )}
+
+              {activeTab === 'daily-expenses' && isAdmin && (
+                <DailyExpenseView
+                  reservations={reservations}
+                  onUpdateReservation={handleUpdateReservation}
                   onOpenReservationDetail={(id) => setDetailReservationId(id)}
                 />
               )}
@@ -541,6 +771,28 @@ export default function App() {
                 <FinanceView
                   reservations={reservations}
                   onUpdateReservation={handleUpdateReservation}
+                />
+              )}
+
+              {activeTab === 'pnl' && isAdmin && (
+                <ProfitLossView
+                  reservations={reservations}
+                  fixedCosts={fixedCosts}
+                  fixedCostsWarning={fixedCostsWarning}
+                  onAddFixedCost={handleAddFixedCost}
+                  onUpdateFixedCost={handleUpdateFixedCost}
+                  onDeleteFixedCost={handleDeleteFixedCost}
+                  onOpenReservationDetail={(id) => setDetailReservationId(id)}
+                />
+              )}
+
+              {activeTab === 'master-prices' && isAdmin && (
+                <MasterPricesView
+                  masterPrices={masterPrices}
+                  tableWarning={masterPricesWarning}
+                  onAddMasterPrice={handleAddMasterPrice}
+                  onUpdateMasterPrice={handleUpdateMasterPrice}
+                  onDeleteMasterPrice={handleDeleteMasterPrice}
                 />
               )}
 

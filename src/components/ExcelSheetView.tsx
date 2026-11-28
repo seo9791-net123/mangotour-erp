@@ -103,6 +103,7 @@ export const ExcelSheetView: React.FC<ExcelSheetViewProps> = ({
       totalPriceUsd: 0,
       totalPriceKrw: 0,
       exchangeRate: 1400,
+      vndExchangeRate: 25400,
       depositPaid: false,
       depositAmountUsd: 0,
       balancePaid: false,

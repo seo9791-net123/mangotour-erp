@@ -9,12 +9,22 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import type { BookingStatus, ParsedQuoteResult, Reservation, UserRole } from '../types/erp';
+import type {
+  BookingStatus,
+  MasterPrice,
+  ParsedQuoteResult,
+  Reservation,
+  UserRole,
+} from '../types/erp';
 import {
   analyzePdfQuoteWithGemini,
   buildReservationFromParsedQuote,
   classifyScheduleType,
+  isSimpleItineraryNotice,
+  matchMasterPrice,
+  normalizeCostCategory,
   RenderedPdfPage,
+  renderImageFileToImages,
   renderPdfToImages,
 } from '../utils/pdfParser';
 import { SAMPLE_PDF_QUOTE } from '../utils/sampleData';
@@ -22,6 +32,7 @@ import { formatKrw, formatUsd } from '../utils/storage';
 
 interface BookingsViewProps {
   reservations: Reservation[];
+  masterPrices: MasterPrice[];
   role: UserRole;
   onAddReservation: (reservation: Reservation) => void;
   onOpenReservationDetail: (reservationId: string) => void;
@@ -29,6 +40,7 @@ interface BookingsViewProps {
 
 export const BookingsView: React.FC<BookingsViewProps> = ({
   reservations,
+  masterPrices,
   role,
   onAddReservation,
   onOpenReservationDetail,
@@ -44,9 +56,15 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | BookingStatus>('ALL');
 
-  const processPdfFile = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      setErrorMsg('PDF 파일(.pdf)만 업로드할 수 있습니다.');
+  const processQuoteFile = async (file: File) => {
+    const lowerName = file.name.toLowerCase();
+    const isPdf = lowerName.endsWith('.pdf') || file.type === 'application/pdf';
+    const isImage =
+      file.type.startsWith('image/') ||
+      /\.(png|jpe?g|webp)$/i.test(lowerName);
+
+    if (!isPdf && !isImage) {
+      setErrorMsg('PDF 파일(.pdf) 또는 견적서 이미지(.png, .jpg, .webp)만 업로드할 수 있습니다.');
       return;
     }
 
@@ -56,8 +74,14 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
     setIsAnalyzing(true);
 
     try {
-      setStatusStep('PDF 페이지를 고해상도 이미지로 변환 중...');
-      const pages = await renderPdfToImages(file);
+      setStatusStep(
+        isPdf
+          ? 'PDF 페이지를 고해상도 이미지로 변환 중...'
+          : '견적서 이미지를 분석용 포맷으로 최적화 중...'
+      );
+      const pages = isPdf
+        ? await renderPdfToImages(file)
+        : await renderImageFileToImages(file);
       setRenderedPages(pages);
 
       setStatusStep(`Gemini AI가 견적서 표와 일정을 인식 중 (${pages.length}페이지)...`);
@@ -65,7 +89,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
       setPreviewQuote(parsed);
       setStatusStep('');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'PDF 분석 중 오류가 발생했습니다.';
+      const msg = err instanceof Error ? err.message : '견적서 분석 중 오류가 발생했습니다.';
       setErrorMsg(msg);
       setStatusStep('');
     } finally {
@@ -76,7 +100,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      processPdfFile(file);
+      processQuoteFile(file);
     }
     e.target.value = '';
   };
@@ -86,7 +110,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
     setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      processPdfFile(file);
+      processQuoteFile(file);
     }
   };
 
@@ -98,7 +122,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
 
   const handleSavePreview = () => {
     if (!previewQuote) return;
-    const newReservation = buildReservationFromParsedQuote(previewQuote);
+    const newReservation = buildReservationFromParsedQuote(previewQuote, masterPrices);
     onAddReservation(newReservation);
     setPreviewQuote(null);
     setRenderedPages([]);
@@ -186,7 +210,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
             <input
               ref={fileInputRef}
               type="file"
-              accept="application/pdf,.pdf"
+              accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
               onChange={handleFileChange}
               className="hidden"
             />
@@ -200,7 +224,7 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
                       <img
                         key={p.pageNumber}
                         src={p.dataUrl}
-                        alt={`PDF 페이지 ${p.pageNumber}`}
+                        alt={`견적서 페이지 ${p.pageNumber}`}
                         className="w-16 h-22 object-cover rounded-lg border border-slate-200 shadow-xs"
                       />
                     ))}
@@ -213,10 +237,10 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
                   <Upload className="w-5 h-5" />
                 </div>
                 <p className="text-sm font-semibold text-slate-800">
-                  여기에 PDF 견적서를 드래그하거나 클릭하여 선택하세요
+                  여기에 PDF 또는 이미지 견적서를 드래그하거나 클릭하여 선택하세요
                 </p>
                 <p className="mt-1 text-xs text-slate-400">
-                  여행 견적 및 일정 안내서 PDF (최대 6페이지 이미지 자동 판독)
+                  여행 견적 및 일정 안내서 PDF / PNG·JPG 이미지 (최대 6페이지 자동 판독 · 단가표 자동 매칭)
                 </p>
               </div>
             )}
@@ -434,20 +458,52 @@ export const BookingsView: React.FC<BookingsViewProps> = ({
 
                 <div>
                   <h4 className="text-xs font-bold text-slate-800 mb-2">
-                    &lsquo;포함&rsquo; 항목 → 원가 체크리스트 자동 연동 ({previewIncludedCosts.length}건)
+                    &lsquo;포함&rsquo; 항목 → 원가 체크리스트 자동 연동 (
+                    {
+                      previewIncludedCosts.filter((c) => !isSimpleItineraryNotice(c?.title || ''))
+                        .length
+                    }
+                    건)
                   </h4>
-                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                    {previewIncludedCosts.map((c, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between gap-2 text-xs py-1.5 px-2.5 rounded-lg bg-slate-50 border border-slate-100"
-                      >
-                        <span className="text-slate-800 truncate">{c.title}</span>
-                        <span className="text-[11px] font-medium text-[#065F46] shrink-0">
-                          {c.category} · 포함
-                        </span>
-                      </div>
-                    ))}
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                    {previewIncludedCosts
+                      .filter((c) => !isSimpleItineraryNotice(c?.title || ''))
+                      .map((c, idx) => {
+                        const normalizedCat = normalizeCostCategory(c.category || '', c.title || '');
+                        const sDate = c.serviceDate || previewQuote.startDate;
+                        const matched = matchMasterPrice(
+                          c.title || '',
+                          normalizedCat,
+                          sDate,
+                          masterPrices
+                        );
+                        return (
+                          <div
+                            key={idx}
+                            className="flex items-center justify-between gap-2 text-xs py-1.5 px-2.5 rounded-lg bg-slate-50 border border-slate-100"
+                          >
+                            <div className="min-w-0">
+                              <span className="text-slate-800 truncate block">{c.title}</span>
+                              {sDate && (
+                                <span className="text-[10px] font-mono text-slate-400">
+                                  진행일 {sDate}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {matched && matched.amount > 0 && (
+                                <span className="text-[10px] font-mono font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded whitespace-nowrap">
+                                  단가 {matched.amount.toLocaleString()} {matched.currency} ·{' '}
+                                  {matched.isWeekend ? '주말' : '평일'}
+                                </span>
+                              )}
+                              <span className="text-[11px] font-medium text-[#065F46] whitespace-nowrap">
+                                {normalizedCat}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
               </div>

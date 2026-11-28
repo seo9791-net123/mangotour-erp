@@ -63,8 +63,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       };
     });
 
-    const systemInstruction = `당신은 베트남 호치민 전문 여행사 '망고투어(MANGO TOUR)'의 이미지형 PDF 견적서('여행 견적 및 일정 안내서') 전문 데이터 추출 엔진입니다.
-제공된 PDF 페이지 이미지들에서 표와 텍스트를 정확히 판독하여 JSON으로 구조화하세요.
+    const systemInstruction = `당신은 베트남 호치민 전문 여행사 '망고투어(MANGO TOUR)'의 이미지형 PDF/견적서('여행 견적 및 일정 안내서') 전문 데이터 추출 엔진입니다.
+제공된 견적서 이미지들에서 표와 텍스트를 정확히 판독하여 JSON으로 구조화하세요.
 
 [핵심 판독 규칙]
 1. 기본 정보:
@@ -76,17 +76,28 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
    - startDate, endDate: 반드시 YYYY-MM-DD 형식으로 변환 (예: "2026.12.10~12.13" -> startDate "2026-12-10", endDate "2026-12-13"). 연도가 생략된 경우 문서 발행일 또는 2026년 기준으로 추론.
    - managerName: 담당자 이름.
 
-2. 일정 스케줄 자동 분류 (scheduleItems):
-   - '여행 추천 일정' 또는 일자별 일정표의 각 활동을 빠짐없이 추출.
-   - 각 일정의 date는 startDate와 dayNumber에 맞춰 YYYY-MM-DD로 계산.
-   - type 분류 규칙:
-     * 일정명 또는 세부내용에 'CC', '골프', '라운딩', '티오프', 'Golf', 'Club' 등이 포함된 경우 (예: 떤선녓 CC, 롱탄 CC, 트윈도브스, 송베, 하모니, 정산 CC 등) -> 반드시 type: "GOLF"로 분류하고, golfCourseName과 teeOffTime(예: "07:30", 미기재 시 "08:00")을 채우며, golfBookingStatus는 "대기"로 설정.
-     * 공항 픽업, 호텔 체크인/체크아웃, 마사지, 스파, 식사, 시내투어, 공항 샌딩 등은 -> 반드시 type: "TOUR"로 분류.
+2. 일정 스케줄 자동 분류 및 실제 진행 날짜 추출 (scheduleItems):
+   - '여행 추천 일정' 또는 일자별 일정표의 각 활동을 빠짐없이 추출하세요.
+   - date (매우 중요): 각 일정 항목마다 **실제 진행 날짜를 반드시 YYYY-MM-DD 형식**으로 정확히 추출하여 저장하세요.
+     * 일자별 헤더(예: "1일차 (12/10)", "Day 2 · 12.11", "3일차")와 startDate를 정확히 대조하여 실제 날짜(YYYY-MM-DD)로 변환하세요. (예: startDate가 "2026-12-10"이면 1일차="2026-12-10", 2일차="2026-12-11", 3일차="2026-12-12")
+   - type 분류 규칙 (오분류 엄격 금지):
+     * "GOLF": 실제 골프 라운딩 활동(예: "떤선녓 CC 18홀 라운딩", "롱탄 CC 티오프")만 type: "GOLF"로 분류하고, golfCourseName과 teeOffTime(예: "07:30", 미기재 시 "08:00")을 채우세요.
+     * "TOUR": 식사(조식, 중식, 석식, 만찬, 클럽하우스 중식 등), 마사지/스파(전신 마사지, 아로마 스파, 이발소 등), 옵션 투어, 공항 픽업/샌딩, 호텔 체크인/체크아웃, 시내 관광, 이동은 제목에 골프장 근처나 클럽하우스 표현이 들어가더라도 **반드시 type: "TOUR"**로 분류하세요.
 
-3. 금액 및 '포함' 항목 자동 연동:
+3. 금액 및 원가 항목 정밀 분류 (includedCostItems):
    - totalPriceUsd, totalPriceKrw: '선택 결제 금액(Total Price)' 또는 총 견적 금액에서 USD와 KRW 숫자를 추출. 한쪽 통화만 있으면 exchangeRate(기본 1400)를 참고해 환산.
-   - revenueItems: '여행 경비 내역' 또는 견적 표에서 개별 금액($ 또는 원)이 명시된 과금 항목(예: 골프 라운딩 $1,776 등)을 추출.
-   - includedCostItems: '여행 경비 내역' 표에서 금액란에 '포함'(또는 '포함사항', 'Included', '무료제공')이라고 적힌 항목들(예: 숙박 3박, 9인승 VIP 리무진, 한국어 전담 가이드, 스파 마사지 등)을 빠짐없이 추출하여 category('숙박' | '차량' | '가이드' | '마사지' | '식사' | '기타')와 함께 반환.
+   - revenueItems: '여행 경비 내역' 또는 견적 표에서 개별 금액($ 또는 원)이 명시된 매출/과금 항목(예: 골프 라운딩 $1,776 등)을 추출.
+   - includedCostItems: '여행 경비 내역', '포함 내역' 등에서 **실제로 현지 원가(비용) 정산이 필요한 항목만** 추출하세요.
+     * category는 반드시 다음 7가지 중 하나와 정확히 일치해야 합니다:
+       "숙박" | "골프장" | "차량" | "가이드" | "식사" | "마사지/옵션" | "기타"
+     * 오분류 엄격 금지:
+       - '중식', '조식', '석식', '식사', '특식', '만찬', '클럽하우스 중식' 등은 반드시 **"식사"**로 분류하세요. (절대 "골프장"으로 분류하지 마세요.)
+       - '마사지', '스파', '아로마', '발마사지', '이발소', '디너 크루즈', '시내투어 옵션' 등은 반드시 **"마사지/옵션"**으로 분류하세요. (절대 "골프장"으로 분류하지 마세요.)
+       - "골프장"은 실제 골프 라운딩(그린피·카트피·캐디피) 항목에만 사용하세요.
+     * 비용이 발생하지 않는 단순 휴식 및 이동 안내 문구 완전 제외 (매우 중요):
+       - "단순 휴식", "오후 휴식", "자유시간", "자유일정", "호텔 체크인 후 휴식", "라운딩 후 휴식 및 이동", "차량으로 이동", "공항 이동 안내", "기상 및 조식 후 이동", "공항 도착 후 가이드 미팅 안내", "출국 수속 후 귀국", "여권/항공 수하물 유의사항", "개인 경비/매너팁 불포함 안내" 등 실제 비용이 발생하지 않는 단순 휴식·이동 안내·주의 문구는 includedCostItems에서 **절대 추출하지 말고 제외**하세요.
+       - 차량은 "9인승 리무진 전용차량", "공항 픽업/샌딩 차량"처럼 실제 차량 대여/배차 비용이 발생하는 항목만 포함하세요.
+     * serviceDate (필수): 해당 원가 항목이 실제 집행·진행되는 날짜를 반드시 YYYY-MM-DD 형식으로 기입하세요 (전 일정 항목이나 체크인 기준 항목은 startDate, 특정 일차 식사/마사지/골프는 해당 일자).
 
 숫자 필드는 쉼표와 통화 기호를 제거한 순수 숫자로 반환하세요.`;
 
@@ -96,7 +107,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         parts: [
           ...imageParts,
           {
-            text: `첨부된 PDF 견적서(${fileName || '견적서.pdf'}, 총 ${images.length}페이지)를 분석하여 고객 정보, 일정(GOLF/TOUR 구분), 총 결제 금액, 개별 과금 항목, 그리고 금액란에 '포함'으로 적힌 항목들을 JSON 스키마에 맞춰 추출해 주세요.`,
+            text: `첨부된 견적서(${fileName || '견적서'}, 총 ${images.length}페이지)를 분석하여 고객 정보, 실제 진행 날짜(YYYY-MM-DD)가 포함된 일정(GOLF/TOUR 구분), 총 결제 금액, 매출 항목, 그리고 실제 비용이 발생하는 정산 대상 원가 항목(7대 카테고리 정확 매칭, serviceDate 필수 포함, 단순 휴식/이동 안내 문구 제외)을 JSON 스키마에 맞춰 추출해 주세요.`,
           },
         ],
       },
@@ -136,10 +147,17 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
                 type: Type.OBJECT,
                 properties: {
                   title: { type: Type.STRING },
-                  category: { type: Type.STRING },
+                  category: {
+                    type: Type.STRING,
+                    enum: ['숙박', '골프장', '차량', '가이드', '식사', '마사지/옵션', '기타'],
+                  },
+                  serviceDate: {
+                    type: Type.STRING,
+                    description: '실제 진행 날짜 (반드시 YYYY-MM-DD 형식, 미상 시 startDate)',
+                  },
                   note: { type: Type.STRING },
                 },
-                required: ['title', 'category'],
+                required: ['title', 'category', 'serviceDate'],
               },
             },
             scheduleItems: {
@@ -147,12 +165,18 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  date: { type: Type.STRING },
+                  date: {
+                    type: Type.STRING,
+                    description: '실제 진행 날짜 (반드시 YYYY-MM-DD 형식, 예: 2026-12-11)',
+                  },
                   dayNumber: { type: Type.INTEGER },
                   time: { type: Type.STRING },
                   title: { type: Type.STRING },
                   detail: { type: Type.STRING },
-                  type: { type: Type.STRING },
+                  type: {
+                    type: Type.STRING,
+                    enum: ['GOLF', 'TOUR'],
+                  },
                   golfCourseName: { type: Type.STRING },
                   teeOffTime: { type: Type.STRING },
                 },

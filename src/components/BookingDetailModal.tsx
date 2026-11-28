@@ -1,13 +1,27 @@
 import React, { useState } from 'react';
-import { Lock, Trash2, X } from 'lucide-react';
-import type {
-  BookingStatus,
-  GolfBookingStatus,
-  Reservation,
-  ScheduleItem,
-  UserRole,
+import { CheckCircle2, Lock, Trash2, X } from 'lucide-react';
+import {
+  COST_CATEGORIES,
+  type BookingStatus,
+  type CostCategory,
+  type CostCurrency,
+  type CostItem,
+  type GolfBookingStatus,
+  type Reservation,
+  type ScheduleItem,
+  type UserRole,
 } from '../types/erp';
-import { formatKrw, formatUsd } from '../utils/storage';
+import {
+  calculateReservationFinance,
+  convertCostAmount,
+  DEFAULT_KRW_RATE,
+  DEFAULT_VND_RATE,
+  formatKrw,
+  formatUsd,
+  getCostItemCurrency,
+  getCostItemOriginalAmount,
+  recalculateCostItemsWithRates,
+} from '../utils/storage';
 import { useBodyScrollLock } from '../utils/useBodyScrollLock';
 
 interface BookingDetailModalProps {
@@ -35,6 +49,36 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const scheduleItems = Array.isArray(reservation?.scheduleItems) ? reservation.scheduleItems : [];
   const revenueItems = Array.isArray(reservation?.revenueItems) ? reservation.revenueItems : [];
+  const costItems = Array.isArray(reservation?.costItems) ? reservation.costItems : [];
+
+  const currentKrwRate =
+    Number(reservation?.exchangeRate) > 0 ? Number(reservation.exchangeRate) : DEFAULT_KRW_RATE;
+  const currentVndRate =
+    Number(reservation?.vndExchangeRate) > 0
+      ? Number(reservation.vndExchangeRate)
+      : DEFAULT_VND_RATE;
+  const finance = calculateReservationFinance(reservation);
+
+  const handleRatesChange = (nextKrwRate: number, nextVndRate: number) => {
+    const safeKrw = nextKrwRate > 0 ? nextKrwRate : DEFAULT_KRW_RATE;
+    const safeVnd = nextVndRate > 0 ? nextVndRate : DEFAULT_VND_RATE;
+    const updatedCosts = recalculateCostItemsWithRates(costItems, safeKrw, safeVnd);
+    const nextTotalPriceKrw = Math.round((Number(reservation.totalPriceUsd) || 0) * safeKrw);
+
+    onUpdateReservation(reservation.id, {
+      exchangeRate: safeKrw,
+      vndExchangeRate: safeVnd,
+      totalPriceKrw: nextTotalPriceKrw,
+      costItems: updatedCosts,
+    });
+  };
+
+  const handleCostUpdate = (costId: string, updates: Partial<CostItem>) => {
+    const nextCosts = costItems.map((item) =>
+      item.id === costId ? { ...item, ...updates } : item
+    );
+    onUpdateReservation(reservation.id, { costItems: nextCosts });
+  };
 
   useBodyScrollLock(true);
 
@@ -111,6 +155,79 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
               )}
             </div>
           </div>
+
+          {/* Upper Tour Exchange Rate & Live Profit Summary (Admin Only) */}
+          {isAdmin && (
+            <div className="bg-amber-50/40 border border-amber-200/80 rounded-xl p-3.5 sm:p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <span className="text-xs font-bold text-slate-800 whitespace-nowrap">
+                  투어 환율 설정 (원화 자동 환산)
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-slate-200 rounded-lg whitespace-nowrap">
+                    <span className="text-[11px] font-semibold text-slate-500">1 USD =</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={10}
+                      value={currentKrwRate}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        handleRatesChange(val > 0 ? val : DEFAULT_KRW_RATE, currentVndRate);
+                      }}
+                      aria-label="투어 KRW 환율"
+                      className="w-20 text-right text-xs font-mono font-bold text-slate-900 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 focus:outline-none focus:bg-white focus:border-[#065F46]"
+                    />
+                    <span className="text-[11px] font-semibold text-slate-700">KRW</span>
+                  </div>
+
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-slate-200 rounded-lg whitespace-nowrap">
+                    <span className="text-[11px] font-semibold text-slate-500">1 USD =</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={100}
+                      value={currentVndRate}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        handleRatesChange(currentKrwRate, val > 0 ? val : DEFAULT_VND_RATE);
+                      }}
+                      aria-label="투어 VND 환율"
+                      className="w-24 text-right text-xs font-mono font-bold text-slate-900 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 focus:outline-none focus:bg-white focus:border-[#065F46]"
+                    />
+                    <span className="text-[11px] font-semibold text-slate-700">VND</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 sm:gap-3 pt-2 border-t border-amber-200/60 text-xs">
+                <div className="bg-white rounded-lg px-3 py-2 border border-slate-200/80">
+                  <span className="block text-[11px] text-slate-500">총 견적 매출</span>
+                  <span className="mt-0.5 block font-mono font-bold text-slate-900">
+                    {formatKrw(reservation.totalPriceKrw)}
+                  </span>
+                </div>
+                <div className="bg-white rounded-lg px-3 py-2 border border-slate-200/80">
+                  <span className="block text-[11px] text-slate-500">총 원가 (환산)</span>
+                  <span className="mt-0.5 block font-mono font-bold text-slate-900">
+                    {formatKrw(finance.totalCostKrw)}
+                  </span>
+                </div>
+                <div className="bg-white rounded-lg px-3 py-2 border border-slate-200/80">
+                  <span className="block text-[11px] text-slate-500">
+                    순수익 ({finance.marginPercent.toFixed(1)}%)
+                  </span>
+                  <span
+                    className={`mt-0.5 block font-mono font-bold ${
+                      finance.netProfitKrw >= 0 ? 'text-[#065F46]' : 'text-red-600'
+                    }`}
+                  >
+                    {formatKrw(finance.netProfitKrw)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Schedule Management Section (Editable by both Admin and Staff) */}
           <div>
@@ -229,7 +346,7 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
           {/* Financial & Billing Section (Admin Only vs Staff Locked) */}
           <div className="pt-2 border-t border-slate-200">
             <h3 className="text-sm font-bold text-slate-900 mb-3">
-              견적 금액 및 과금 내역
+              견적 금액 · 다중 통화 원가 및 과금 내역
             </h3>
 
             {isAdmin ? (
@@ -244,10 +361,9 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                       value={reservation.totalPriceUsd || 0}
                       onChange={(e) => {
                         const usd = Number(e.target.value) || 0;
-                        const rate = reservation.exchangeRate || 1400;
                         onUpdateReservation(reservation.id, {
                           totalPriceUsd: usd,
-                          totalPriceKrw: Math.round(usd * rate),
+                          totalPriceKrw: Math.round(usd * currentKrwRate),
                         });
                       }}
                       className="w-full px-3 py-2 text-sm font-mono font-semibold bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-[#065F46]"
@@ -262,6 +378,122 @@ export const BookingDetailModal: React.FC<BookingDetailModalProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* Per-item Multi-Currency Cost Items */}
+                {costItems.length > 0 && (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs font-semibold text-slate-600">
+                      <span>원가 항목 ({costItems.length}건 · 통화별 KRW 자동 환산)</span>
+                      <span className="font-mono text-slate-900">
+                        합계 {formatKrw(finance.totalCostKrw)}
+                      </span>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {costItems.map((cost) => {
+                        const itemCurrency = getCostItemCurrency(cost);
+                        const originalAmount = getCostItemOriginalAmount(cost);
+                        const converted = convertCostAmount(
+                          originalAmount,
+                          itemCurrency,
+                          currentKrwRate,
+                          currentVndRate
+                        );
+                        const normalizedCategory: CostCategory =
+                          (cost.category as string) === '마사지'
+                            ? '마사지/옵션'
+                            : (COST_CATEGORIES as readonly string[]).includes(cost.category)
+                              ? cost.category
+                              : '기타';
+
+                        return (
+                          <div
+                            key={cost.id}
+                            className={`px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs ${
+                              cost.paid ? 'bg-emerald-50/25' : 'bg-white'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <button
+                                type="button"
+                                onClick={() => handleCostUpdate(cost.id, { paid: !cost.paid })}
+                                aria-label="지불 완료 토글"
+                                className={`inline-flex items-center justify-center w-5 h-5 rounded border shrink-0 cursor-pointer ${
+                                  cost.paid
+                                    ? 'bg-[#065F46] border-[#065F46] text-white'
+                                    : 'bg-white border-slate-300 text-transparent hover:border-[#065F46]'
+                                }`}
+                              >
+                                <CheckCircle2 className="w-3 h-3" />
+                              </button>
+                              <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-slate-100 text-slate-700 rounded whitespace-nowrap shrink-0">
+                                {normalizedCategory}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="font-semibold text-slate-800 truncate">{cost.title}</p>
+                                <p className="text-[10px] font-mono text-slate-400">
+                                  {cost.serviceDate || reservation.startDate}
+                                  {cost.note ? ` · ${cost.note}` : ''}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <select
+                                value={itemCurrency}
+                                aria-label="원가 통화 선택"
+                                onChange={(e) => {
+                                  const nextCur = e.target.value as CostCurrency;
+                                  const nextConv = convertCostAmount(
+                                    originalAmount,
+                                    nextCur,
+                                    currentKrwRate,
+                                    currentVndRate
+                                  );
+                                  handleCostUpdate(cost.id, {
+                                    currency: nextCur,
+                                    originalAmount,
+                                    costUsd: nextConv.costUsd,
+                                    costKrw: nextConv.costKrw,
+                                  });
+                                }}
+                                className="px-1.5 py-1 text-[11px] font-mono font-semibold bg-slate-100 border border-slate-200 rounded-lg focus:outline-none focus:border-[#065F46] cursor-pointer"
+                              >
+                                <option value="USD">USD</option>
+                                <option value="VND">VND</option>
+                                <option value="KRW">KRW</option>
+                              </select>
+                              <input
+                                type="number"
+                                min={0}
+                                step={itemCurrency === 'USD' ? 'any' : 1000}
+                                value={originalAmount}
+                                onChange={(e) => {
+                                  const nextAmt = Math.max(0, Number(e.target.value) || 0);
+                                  const nextConv = convertCostAmount(
+                                    nextAmt,
+                                    itemCurrency,
+                                    currentKrwRate,
+                                    currentVndRate
+                                  );
+                                  handleCostUpdate(cost.id, {
+                                    currency: itemCurrency,
+                                    originalAmount: nextAmt,
+                                    costUsd: nextConv.costUsd,
+                                    costKrw: nextConv.costKrw,
+                                  });
+                                }}
+                                className="w-24 px-2 py-1 text-right text-xs font-mono font-semibold bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-[#065F46]"
+                              />
+                              <span className="w-24 text-right font-mono font-bold text-slate-800 whitespace-nowrap">
+                                {formatKrw(converted.costKrw)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {revenueItems.length > 0 && (
                   <div className="border border-slate-200 rounded-xl divide-y divide-slate-100">

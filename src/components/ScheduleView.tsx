@@ -20,19 +20,32 @@ interface CalendarEntry {
   schedule: ScheduleItem;
 }
 
+function getLocalTodayParts() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const d = now.getDate();
+  const dateStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  return { year: y, month: m, dateStr };
+}
+
 export const ScheduleView: React.FC<ScheduleViewProps> = ({
   reservations,
   role,
   onUpdateScheduleItem,
   onOpenReservationDetail,
 }) => {
-  const [currentDate, setCurrentDate] = useState(() => new Date(2026, 10, 1)); // Default Nov 2026
+  const [currentDate, setCurrentDate] = useState(() => {
+    const { year: y, month: m } = getLocalTodayParts();
+    return new Date(y, m, 1);
+  });
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'GOLF' | 'TOUR'>('ALL');
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [focusedScheduleId, setFocusedScheduleId] = useState<string | null>(null);
 
   useBodyScrollLock(Boolean(selectedDay));
 
+  const { dateStr: todayStr } = getLocalTodayParts();
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
@@ -139,7 +152,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   };
 
   const goToday = () => {
-    setCurrentDate(new Date(2026, 10, 1));
+    const { year: y, month: m } = getLocalTodayParts();
+    setCurrentDate(new Date(y, m, 1));
     setSelectedDay(null);
     setFocusedScheduleId(null);
   };
@@ -303,7 +317,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
             const dayEntries = entriesByDate.get(cell.dateStr) || [];
             const isSelected = selectedDay === cell.dateStr;
-            const isToday = cell.dateStr === '2026-11-26';
+            const isToday = cell.dateStr === todayStr;
             const dayOfWeek = idx % 7;
 
             return (
@@ -315,26 +329,35 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 }}
                 className={`min-h-[82px] sm:min-h-[126px] p-1 sm:p-2.5 text-left transition-colors cursor-pointer flex flex-col ${
                   isSelected
-                    ? 'bg-amber-50/50 ring-1 ring-inset ring-[#F59E0B]'
+                    ? 'bg-amber-50/70 ring-2 ring-inset ring-[#F59E0B]'
+                    : isToday
+                    ? 'bg-emerald-50/80 ring-1 ring-inset ring-[#065F46]/50 hover:bg-emerald-100/60'
                     : 'bg-white hover:bg-slate-50/80'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1.5">
-                  <span
-                    className={`inline-flex items-center justify-center w-6 h-6 text-xs font-semibold tabular-nums rounded-lg ${
-                      isToday
-                        ? 'bg-[#065F46] text-white'
-                        : dayOfWeek === 0
-                        ? 'text-red-500'
-                        : dayOfWeek === 6
-                        ? 'text-blue-600'
-                        : 'text-slate-700'
-                    }`}
-                  >
-                    {cell.dayNumber}
-                  </span>
+                <div className="flex items-center justify-between mb-1.5 gap-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className={`inline-flex items-center justify-center w-6 h-6 text-xs font-semibold tabular-nums rounded-lg shrink-0 ${
+                        isToday
+                          ? 'bg-[#065F46] text-white font-bold shadow-xs'
+                          : dayOfWeek === 0
+                          ? 'text-red-500'
+                          : dayOfWeek === 6
+                          ? 'text-blue-600'
+                          : 'text-slate-700'
+                      }`}
+                    >
+                      {cell.dayNumber}
+                    </span>
+                    {isToday && (
+                      <span className="hidden sm:inline text-[11px] font-bold text-[#065F46] whitespace-nowrap">
+                        오늘
+                      </span>
+                    )}
+                  </div>
                   {dayEntries.length > 0 && (
-                    <span className="text-[11px] text-slate-400 tabular-nums">
+                    <span className="text-[11px] text-slate-400 tabular-nums whitespace-nowrap">
                       {dayEntries.length}건
                     </span>
                   )}
